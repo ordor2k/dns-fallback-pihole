@@ -56,6 +56,7 @@ HTML_TEMPLATE = """
         <tr><td>{{ domain }}</td><td>{{ count }}</td></tr>
         {% endfor %}
     </table>
+
     <div class="download-panel">
         <h3>📦 Downloads</h3>
         <a href="/download-log"><button>⬇️ Full Log</button></a>
@@ -71,7 +72,6 @@ HTML_TEMPLATE = """
             <button type="submit">🧽 Clean Log</button>
         </form>
     </div>
-
     <script>
         const toggle = document.getElementById('darkToggle');
         if (localStorage.getItem('dark-mode') === 'true') {
@@ -150,6 +150,44 @@ def clean_log():
         flash(("error", "⚠️ Log file not found."))
     return redirect(url_for("dashboard"))
 
+@app.route("/download-log")
+def download_log():
+    return send_file(LOG_FILE, as_attachment=True)
+
+@app.route("/download-fallbacks")
+def download_fallbacks():
+    lines = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f:
+            lines = [line for line in f if "Fallback used for" in line]
+    return Response("".join(lines), mimetype="text/plain", headers={
+        "Content-Disposition": "attachment; filename=fallbacks.log"
+    })
+
+@app.route("/download-queries")
+def download_queries():
+    lines = []
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f:
+            lines = [line for line in f if "Query:" in line]
+    return Response("".join(lines), mimetype="text/plain", headers={
+        "Content-Disposition": "attachment; filename=queries.log"
+    })
+
+@app.route("/download-domains")
+def download_domains():
+    domains = set()
+    if os.path.exists(LOG_FILE):
+        with open(LOG_FILE) as f:
+            for line in f:
+                if "Fallback used for" in line:
+                    parts = line.strip().split("Fallback used for")
+                    if len(parts) > 1:
+                        domains.add(parts[1].strip())
+    csv = "domain\n" + "\n".join(sorted(domains))
+    return Response(csv, mimetype="text/csv", headers={
+        "Content-Disposition": "attachment; filename=fallback_domains.csv"
+    })
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8053)
-
