@@ -5,10 +5,10 @@ import socket, time, logging
 from collections import defaultdict
 
 # Configuration
-PRIMARY_DNS = ("127.0.0.1", 5335)
+LISTEN_PORT = 5353  # Proxy listens on 5353 (avoid 5355 due to conflict with Unbound)
+PRIMARY_DNS = ("127.0.0.1", 5355)  # Unbound listens on 5355
 FALLBACK_DNS = ("1.1.1.1", 53)
-LISTEN_PORT = 5353
-TIMEOUT = 0.3  # seconds
+TIMEOUT = 2.0  # More time for Unbound recursion
 
 # Logging setup
 logging.basicConfig(
@@ -17,7 +17,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-# Runtime stats
+# Stats
 total_queries = 0
 fallback_hits = 0
 per_domain_fallback = defaultdict(int)
@@ -37,7 +37,7 @@ while True:
         total_queries += 1
         logging.info(f"→ Query: {domain} ({qtype}) from {addr[0]}")
 
-        # Try Unbound first
+        # Attempt recursive query via Unbound
         primary_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         primary_sock.settimeout(TIMEOUT)
         primary_sock.sendto(data, PRIMARY_DNS)
@@ -48,17 +48,18 @@ while True:
         except socket.timeout:
             fallback_hits += 1
             per_domain_fallback[domain] += 1
-            logging.warning(f"⏱ Timeout → Fallback used for {domain}")
+            logging.warning(f"⏱ Timeout → Fallback used for {domain} (⚠️ no DNSSEC validation)")
 
             fallback_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             fallback_sock.sendto(data, FALLBACK_DNS)
             response, _ = fallback_sock.recvfrom(512)
             logging.info(f"✔ Fallback success for {domain}")
+            fallback_sock.close()
 
-        # Respond to client
+        primary_sock.close()
         sock.sendto(response, addr)
 
-        # Periodic stats logging
+        # Log stats periodically
         if total_queries % 10 == 0:
             logging.info(f"STATS: {total_queries} total queries, {fallback_hits} fallbacks")
             top = sorted(per_domain_fallback.items(), key=lambda x: x[1], reverse=True)[:3]
@@ -67,4 +68,3 @@ while True:
 
     except Exception as e:
         logging.error(f"❌ Error: {e}")
-
