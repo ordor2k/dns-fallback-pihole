@@ -1,0 +1,13 @@
+[Unit]
+Description=Python DNS Fallback Proxy
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/bin/dns_fallback_proxy.py
+Restart=on-failure
+StandardOutput=append:/var/log/dns-fallback.log
+StandardError=append:/var/log/dns-fallback.err.log
+
+[Install]
+WantedBy=multi-user.target
