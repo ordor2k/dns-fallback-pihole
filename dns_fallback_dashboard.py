@@ -12,11 +12,11 @@ HTML_TEMPLATE = """
 <!doctype html>
 <html>
 <head>
-    <title>DNS Fallback Dashboard</title>
+    <title>Pi-hole DNS Fallback Monitor</title>
     <meta http-equiv="refresh" content="10">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>📡</text></svg>">
     <style>
-        body { font-family: Arial; margin: 2em; background: #f8f9fa; color: #333; transition: background 0.3s; }
+        body { font-family: Arial; margin: 2em; background: #f8f9fa; color: #333; transition: background 0.3s, color 0.3s; }
         h1 { color: #007bff; }
         table { width: 100%; border-collapse: collapse; margin-top: 1em; }
         th, td { padding: 8px 12px; border: 1px solid #ccc; text-align: left; }
@@ -56,7 +56,6 @@ HTML_TEMPLATE = """
         <tr><td>{{ domain }}</td><td>{{ count }}</td></tr>
         {% endfor %}
     </table>
-
     <div class="download-panel">
         <h3>📦 Downloads</h3>
         <a href="/download-log"><button>⬇️ Full Log</button></a>
