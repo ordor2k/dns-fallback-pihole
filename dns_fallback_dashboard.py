@@ -10,18 +10,25 @@ HTML_TEMPLATE = """
 <!doctype html>
 <html>
 <head>
-    <title>DNS Fallback Stats</title>
+    <title>Pi-hole DNS Fallback Monitor</title>
     <meta http-equiv="refresh" content="10">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>📡</text></svg>">
     <style>
-        body { font-family: Arial; margin: 2em; background: #f8f9fa; color: #333; }
+        body { font-family: Arial; margin: 2em; background: #f8f9fa; color: #333; transition: background 0.3s, color 0.3s; }
         h1 { color: #007bff; }
         table { width: 100%; border-collapse: collapse; margin-top: 1em; }
         th, td { padding: 8px 12px; border: 1px solid #ccc; text-align: left; }
         th { background: #007bff; color: #fff; }
+        .dark-mode body { background: #121212; color: #eee; }
+        .dark-mode th { background: #333; color: #eee; }
+        .toggle { position: fixed; top: 1em; right: 1em; }
     </style>
 </head>
 <body>
-    <h1>DNS Fallback Dashboard</h1>
+    <div class="toggle">
+        <label><input type="checkbox" id="darkToggle"> 🌙 Dark Mode</label>
+    </div>
+    <h1>DNS Fallback Monitor for Pi-hole</h1>
     <p>Total Queries: <strong>{{ total }}</strong></p>
     <p>Fallbacks Used: <strong>{{ fallback }}</strong></p>
     <h2>Top Fallback Domains</h2>
@@ -31,6 +38,22 @@ HTML_TEMPLATE = """
         <tr><td>{{ domain }}</td><td>{{ count }}</td></tr>
         {% endfor %}
     </table>
+    <script>
+        const toggle = document.getElementById('darkToggle');
+        const root = document.documentElement;
+
+        // Initialize from localStorage
+        if (localStorage.getItem('dark-mode') === 'true') {
+            toggle.checked = true;
+            root.classList.add('dark-mode');
+        }
+
+        toggle.addEventListener('change', () => {
+            const enabled = toggle.checked;
+            root.classList.toggle('dark-mode', enabled);
+            localStorage.setItem('dark-mode', enabled);
+        });
+    </script>
 </body>
 </html>
 """
