@@ -1,0 +1,14 @@
+[Unit]
+Description=DNS Fallback Dashboard (Flask App)
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/dns_fallback_dashboard.py
+WorkingDirectory=/usr/local/bin
+Restart=on-failure
+StandardOutput=append:/var/log/dns-fallback-dashboard.log
+StandardError=append:/var/log/dns-fallback-dashboard.err
+User=root
+
+[Install]
+WantedBy=multi-user.target
