@@ -1,11 +1,8 @@
-<<<<<<< HEAD
+
 # DNS Fallback for Pi-hole with Unbound
 
-This project provides a resilient DNS solution for Pi-hole using Unbound as the primary recursive resolver and a Python proxy to handle fallback to public DNS servers (like 1.1.1.1 or 8.8.8.8) in case Unbound fails. It includes a live web dashboard to monitor DNS queries and fallbacks.
-
-⚠️ **Note:** The fallback logic is handled entirely by the Python proxy (`dns_fallback_proxy.py`). Unbound is not configured with any forward zones and continues to operate as a standard recursive resolver.
-
----
+This project contains a resilient DNS setup for Pi-hole using Unbound, with fallback to public DNS servers and a web-based stats dashboard.
+⚠️ Note: The fallback logic is handled entirely by the Python proxy (dns_fallback_proxy.py). Unbound remains a standard recursive resolver and is not configured with any forward zones.
 
 ## 📦 Installation Instructions
 
@@ -116,4 +113,3 @@ This project contains a resilient DNS setup for Pi-hole using Unbound, with fall
 
 ## Author
 [Your Name or Handle]
->>>>>>> 978ab99 (Update README.md)
