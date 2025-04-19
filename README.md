@@ -1,4 +1,3 @@
-
 # DNS Fallback for Pi-hole with Unbound
 
 This project provides a resilient DNS solution for Pi-hole using Unbound as the primary recursive resolver and a Python proxy to handle fallback to public DNS servers (like 1.1.1.1 or 8.8.8.8) in case Unbound fails. It includes a live web dashboard to monitor DNS queries and fallbacks.
@@ -84,6 +83,35 @@ Open in your browser:
 - `pi-hole.conf` – Sample Unbound config snippet
 
 ---
+
+
+---
+
+## 🛠️ Alternative Setup Options
+
+### 🔁 Scripted Installation
+
+You can use the provided installation script to automatically install everything:
+```bash
+curl -sSL https://raw.githubusercontent.com/ordor2k/dns-fallback-pihole/main/install_dns_fallback.sh | bash
+```
+
+Or, if you have already cloned the repository:
+```bash
+chmod +x install_dns_fallback.sh
+./install_dns_fallback.sh
+```
+
+### ❌ Uninstallation Script
+
+To fully uninstall the service and dashboard, run:
+```bash
+chmod +x uninstall_dns_fallback.sh
+./uninstall_dns_fallback.sh
+```
+
+This will stop services, remove binaries and logs, and clean up systemd files.
+
 
 ## ✍️ Author
 
