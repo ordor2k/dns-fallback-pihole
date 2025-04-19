@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "🧹 Uninstalling DNS Fallback v1.0.3..."
+echo "🧹 Uninstalling DNS Fallback..."
 
 # Stop and disable services
 systemctl stop dns-fallback.service dns-fallback-dashboard.service
@@ -18,4 +18,4 @@ rm -f /etc/unbound/unbound.conf.d/pi-hole.conf
 # Reload systemd
 systemctl daemon-reload
 
-echo "🗑️ DNS Fallback v1.0.3 removed."
+echo "🗑️ DNS Fallback removed."
