@@ -6,7 +6,26 @@ This project provides a resilient DNS solution for Pi-hole using Unbound as the 
 
 ---
 
-## 📦 Installation Instructions
+## ⚡ Automatic Installation (Recommended)
+
+```bash
+git clone https://github.com/ordor2k/dns-fallback-pihole.git
+cd dns-fallback-pihole
+sudo bash install_dns_fallback.sh
+```
+
+Once completed:
+- Set Pi-hole custom DNS to: `127.0.0.1#5353`
+- Access the dashboard via: `http://<your-pi-ip>:8053`
+
+To uninstall:
+```bash
+sudo bash uninstall_dns_fallback.sh
+```
+
+---
+
+## 🛠️ Manual Installation (Advanced)
 
 Make sure you have **Pi-hole and Unbound** already installed on your system.
 
@@ -80,38 +99,10 @@ Open in your browser:
 - `dns_fallback_dashboard.py` – Flask web dashboard
 - `dns-fallback.service` – systemd service for the proxy
 - `dns-fallback-dashboard.service` – systemd service for the dashboard
-- `pi-hole.conf` – Sample Unbound config snippet
+- `install_dns_fallback.sh` – Auto installation script
+- `uninstall_dns_fallback.sh` – Auto uninstall script
 
 ---
-
-
----
-
-## 🛠️ Alternative Setup Options
-
-### 🔁 Scripted Installation
-
-You can use the provided installation script to automatically install everything:
-```bash
-curl -sSL https://raw.githubusercontent.com/ordor2k/dns-fallback-pihole/main/install_dns_fallback.sh | bash
-```
-
-Or, if you have already cloned the repository:
-```bash
-chmod +x install_dns_fallback.sh
-./install_dns_fallback.sh
-```
-
-### ❌ Uninstallation Script
-
-To fully uninstall the service and dashboard, run:
-```bash
-chmod +x uninstall_dns_fallback.sh
-./uninstall_dns_fallback.sh
-```
-
-This will stop services, remove binaries and logs, and clean up systemd files.
-
 
 ## ✍️ Author
 
