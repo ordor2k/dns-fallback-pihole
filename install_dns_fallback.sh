@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "🔧 Installing DNS Fallback for Pi-hole v1.0.3..."
+echo "🔧 Installing DNS Fallback for Pi-hole..."
 
 # 1. Update & install dependencies
 apt update
