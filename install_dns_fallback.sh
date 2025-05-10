@@ -53,6 +53,9 @@ systemctl daemon-reload
 systemctl enable --now dns-fallback.service
 systemctl enable --now dns-fallback-dashboard.service
 
+# 7. Install logrotate config
+cp logrotate/dns-fallback /etc/logrotate.d/dns-fallback
+
 echo "✅ Installation complete!"
 echo "📌 Set Pi-hole custom DNS: 127.0.0.1#5353"
 echo "🌐 Dashboard: http://<your-pi-ip>:8053"
