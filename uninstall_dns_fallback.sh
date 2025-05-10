@@ -18,4 +18,7 @@ rm -f /etc/unbound/unbound.conf.d/pi-hole.conf
 # Reload systemd
 systemctl daemon-reload
 
+# Remove logrotate config
+rm -f /etc/logrotate.d/dns-fallback
+
 echo "🗑️ DNS Fallback removed."
