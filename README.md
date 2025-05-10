@@ -51,6 +51,7 @@ sudo cp dns_fallback_proxy.py /usr/local/bin/
 sudo cp dns_fallback_dashboard.py /usr/local/bin/
 sudo chmod +x /usr/local/bin/*.py
 sudo cp dns-fallback*.service /etc/systemd/system/
+sudo cp logrotate/dns-fallback /etc/logrotate.d/dns-fallback
 ```
 
 ### 4. Ensure Unbound is Listening on Port 5335
