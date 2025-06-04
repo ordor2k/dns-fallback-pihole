@@ -184,11 +184,12 @@ cd dns-fallback-pihole # Ensure you are in the project directory
 sudo ./uninstall_dns_fallback.sh
 This script will safely stop/disable services, remove all installed files, clean logrotate configurations, and restore Pi-hole's original upstream DNS settings. 🧹
 
-🔒 Security Notes
+##🔒 Security Notes
 The proxy listens on 127.0.0.1 (localhost) by default, making it accessible only from the Pi-hole machine itself. This is the recommended and most secure configuration. 🛡️
 The dashboard listens on 0.0.0.0 by default, allowing access from any device on your local network. It is crucial to avoid exposing your Pi-hole directly to the public internet (e.g., via router port forwarding) if you are not using proper security measures, as this would expose your dashboard as well. ⚠️
 🛠️ Troubleshooting
 Services not starting: Check sudo systemctl status <service_name>.service and sudo journalctl -u <service_name>.service for specific error messages. 🔍
 DNS resolution issues: Verify the dns_port in config.ini matches the setting in /etc/dnsmasq.d/01-pihole.conf. Review dns-fallback.log for any errors. Ensure your primary DNS (e.g., Unbound) is operational. ❓
-📜 License
+
+##📜 License
 This project is licensed under the MIT License - see the LICENSE file for details. 📝
