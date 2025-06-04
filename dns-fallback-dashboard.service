@@ -1,6 +1,6 @@
 [Unit]
 Description=DNS Fallback Dashboard (Flask App)
-After=network.target
+After=network.target dns-fall
 
 [Service]
 ExecStart=/usr/bin/python3 /usr/local/bin/dns_fallback_dashboard.py
