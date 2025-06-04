@@ -28,7 +28,7 @@ Your DNS Fallback Pi-hole now includes significant improvements:
 * **Advanced Logging**: 🪵 Detailed, timestamped logs using Python's `logging` module for better insights and troubleshooting. 🔍
 * **Robust Health Checks**: 🩺 Smarter detection of primary DNS server issues, with multiple checks and a configurable failure threshold before initiating a fallback. 🚦
 * **Improved Installation & Uninstallation**: 🛠️ More resilient setup and cleanup processes, including automatic management of Python dependencies. 🧹
-* **Optimized DNS Port**: 📡 The proxy now uses port **53053** by default, avoiding conflicts with mDNS (port 5353) for smoother integration. ➡️
+* **Optimized DNS Port**: 📡 The proxy now uses port **5355** by default, avoiding conflicts with mDNS (port 5353) for smoother integration. ➡️
 
 ---
 
@@ -55,7 +55,7 @@ Follow these steps to get DNS Fallback Pi-hole installed on your system.
 
     * `primary_dns`: The IP address of your main DNS resolver (e.g., `127.0.0.1` for local Unbound). 🏠
     * `fallback_dns`: The IP address of the public DNS server for fallback (e.g., `1.1.1.1`, `8.8.8.8`). 🌐
-    * `dns_port`: The port the DNS proxy will listen on. Default is **`53053`**. Pi-hole will forward queries here. 👂
+    * `dns_port`: The port the DNS proxy will listen on. Default is **`5355`**. Pi-hole will forward queries here. 👂
     * `health_check_interval`: How often (in seconds) the primary DNS health is checked. 🩺
     * `failure_threshold`: Number of consecutive failed checks before a fallback. ⚠️
     * `dashboard_port`: The port for the web dashboard (default is `8053`). 📊
@@ -160,7 +160,7 @@ For users who prefer a step-by-step installation process, you can follow these m
     ```
 
 8.  **Configure Pi-hole to Use the Proxy:** ⚙️
-    You need to tell Pi-hole to forward its DNS queries to your proxy running on `127.0.0.1` at the configured `dns_port` (default `53053`).
+    You need to tell Pi-hole to forward its DNS queries to your proxy running on `127.0.0.1` at the configured `dns_port` (default `5355`).
 
     ```bash
     # IMPORTANT: Ensure dns_port in /opt/dns-fallback/config.ini matches this!
@@ -258,7 +258,7 @@ Confirm your installation is working correctly:
 4.  **Test DNS Resolution**: ❓
     * **Direct Proxy Test (from Pi-hole machine)**:
         ```bash
-        dig google.com @127.0.0.1 -p 53053
+        dig google.com @127.0.0.1 -p 5355
         ```
     * **Via Pi-hole (from any client device)**:
         ```bash
@@ -306,7 +306,7 @@ The uninstallation process is automated by the `uninstall_dns_fallback.sh` scrip
 * Stops and disables the `dns-fallback.service` and `dns-fallback-dashboard.service`.
 * Removes the `systemd` service unit files from `/etc/systemd/system/`.
 * Reloads the `systemd` daemon to register the removal of services.
-* Removes the `server=127.0.0.1#53053` (or your configured port) line from `/etc/dnsmasq.d/01-pihole.conf`, reverting Pi-hole's upstream DNS configuration.
+* Removes the `server=127.0.0.1#5355` (or your configured port) line from `/etc/dnsmasq.d/01-pihole.conf`, reverting Pi-hole's upstream DNS configuration.
 * Restarts Pi-hole's DNS resolver (`pihole-FTL`) to apply the configuration change.
 * Removes the logrotate configuration file for `dns-fallback` from `/etc/logrotate.d/`.
 * Deletes the entire project directory (`/opt/dns-fallback/`) and its contents.
