@@ -1,14 +1,22 @@
 [Unit]
-Description=DNS Fallback Dashboard (Flask App)
-After=network.target dns-fall
+Description=DNS Fallback Pi-hole Dashboard Service
+After=network.target dns-fallback.service
 
 [Service]
-ExecStart=/usr/bin/python3 /usr/local/bin/dns_fallback_dashboard.py
-WorkingDirectory=/usr/local/bin
-Restart=on-failure
-StandardOutput=append:/var/log/dns-fallback-dashboard.log
-StandardError=append:/var/log/dns-fallback-dashboard.err
+Type=simple
 User=root
+# If you want to run as a dedicated user (recommended for security):
+# User=dnsfallback
+# Group=dnsfallback
+WorkingDirectory=/opt/dns-fallback
+ExecStart=/usr/bin/python3 /opt/dns-fallback/dns_fallback_dashboard.py
+Restart=on-failure
+RestartSec=5s
+StandardOutput=file:/var/log/dns-fallback_dashboard.log
+StandardError=file:/var/log/dns-fallback_dashboard.log
+# Alternative for logging: use journald
+# StandardOutput=journal
+# StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
