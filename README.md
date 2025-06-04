@@ -82,7 +82,7 @@ primary_dns = 127.0.0.1
 fallback_dns = 1.1.1.1
 
 # The port the DNS fallback proxy will listen on (Pi-hole will forward to this)
-dns_port = 53053
+dns_port = 5355
 
 # Interval (in seconds) between health checks of the primary DNS server
 health_check_interval = 10
