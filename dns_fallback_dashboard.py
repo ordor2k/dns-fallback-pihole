@@ -107,7 +107,7 @@ def dashboard():
             for line in log:
                 if re.search(r"query", line, re.IGNORECASE):
                     total_queries += 1
-                elif "Fallback used for" in line:
+                elif "falling back" in line:
                     fallback_hits += 1
                     parts = line.strip().split("Fallback used for")
                     if len(parts) > 1:
