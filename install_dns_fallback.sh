@@ -118,4 +118,33 @@ echo "DNS Fallback Pi-hole installation complete!"
 echo "You can check service status with: sudo systemctl status dns-fallback"
 echo "You can view proxy logs with: tail -f /var/log/dns-fallback.log"
 echo "You can view dashboard logs with: tail -f /var/log/dns-fallback_dashboard.log"
-echo "Access the dashboard at: http://<your-pihole-ip>:<dashboard_port>"
+echo "" # Add a blank line for readability
+
+# Get the machine's primary IP address (excluding loopback)
+echo "Detecting Pi-hole's IP address..."
+# Use hostname -I to get local IP, taking the first one if multiple
+PIHOLE_IP=$(hostname -I | awk '{print $1}')
+
+# Read the dashboard port from the config.ini file
+echo "Reading dashboard port from config.ini..."
+# PROJECT_DIR should be defined earlier in the script (e.g., /opt/dns-fallback)
+DASHBOARD_PORT=$(grep '^dashboard_port' "$PROJECT_DIR/config.ini" | cut -d'=' -f2 | tr -d '[:space:]')
+
+if [ -z "$PIHOLE_IP" ]; then
+    echo "Warning: Could not automatically detect Pi-hole's IP address."
+    DASHBOARD_ACCESS_URL="http://<YOUR_PIHOLE_IP>:$DASHBOARD_PORT"
+    echo "Please find your Pi-hole's IP manually using 'hostname -I' or 'ip a'."
+else
+    DASHBOARD_ACCESS_URL="http://$PIHOLE_IP:$DASHBOARD_PORT"
+    echo "Detected Pi-hole IP: $PIHOLE_IP"
+fi
+
+echo ""
+echo "DNS Fallback Pi-hole installation complete! 🎉"
+echo ""
+echo "To check service status:          sudo systemctl status dns-fallback"
+echo "To view proxy logs:               tail -f /var/log/dns-fallback.log"
+echo "To view dashboard logs:           tail -f /var/log/dns-fallback_dashboard.log"
+echo ""
+echo "Access the dashboard at:          $DASHBOARD_ACCESS_URL"
+echo ""
