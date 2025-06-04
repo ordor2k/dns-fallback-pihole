@@ -111,7 +111,7 @@ systemctl start dns-fallback-dashboard.service || { echo "Error: Failed to start
 
 # Restart Pi-hole's dnsmasq service
 echo "Restarting Pi-hole FTL (dnsmasq) service..."
-pihole restartdns || { echo "Warning: Failed to restart Pi-hole DNS. You may need to restart it manually."; }
+sudo systemctl restart pihole-FTL.service || { echo "Warning: Failed to restart Pi-hole DNS. You may need to restart it manually."; }
 
 
 echo "DNS Fallback Pi-hole installation complete!"
