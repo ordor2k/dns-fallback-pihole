@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from dnslib.server import DNSServer, BaseResolver
 from dnslib import DNSRecord, QTYPE
-import socket, time, logging, os, threading, signal, sys
+import socket, time, logging, logging.handlers, os, threading, signal, sys
 from collections import Counter
 
 # Configuration from environment variables or defaults
