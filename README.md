@@ -65,7 +65,7 @@ Follow these steps to get DNS Fallback Pi-hole installed on your system.
 3.  **Run the Installation Script**: 🛠️
     Execute the installation script with root privileges:
     ```bash
-    sudo ./install_dns_fallback.sh
+    sudo bash install_dns_fallback.sh
     ```
     This script will:
 
