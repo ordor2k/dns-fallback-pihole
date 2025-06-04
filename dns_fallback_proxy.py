@@ -6,7 +6,7 @@ from collections import Counter
 
 # Configuration from environment variables or defaults
 LISTEN_PORT = int(os.getenv("DNS_LISTEN_PORT", 5355))
-PRIMARY_DNS = (os.getenv("PRIMARY_DNS", "127.0.0.1"), int(os.getenv("PRIMARY_DNS_PORT", 5353)))
+PRIMARY_DNS = (os.getenv("PRIMARY_DNS", "127.0.0.1"), int(os.getenv("PRIMARY_DNS_PORT", 5335)))
 FALLBACK_DNS = (os.getenv("FALLBACK_DNS", "1.1.1.1"), int(os.getenv("FALLBACK_DNS_PORT", 53)))
 TIMEOUT = float(os.getenv("DNS_TIMEOUT", 2.0))
 FALLBACK_TIMEOUT = float(os.getenv("FALLBACK_TIMEOUT", 3.0))
