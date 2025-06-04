@@ -40,8 +40,8 @@ Follow these steps to get DNS Fallback Pi-hole installed on your system.
 
 1.  **Clone the Repository**: ⬇️
     ```bash
-    git clone [https://github.com/ordor2k/dns-fallback-pihole.git](https://github.com/ordor2k/dns-fallback-pihole.git)
-    cd dns-fallback-pihole
+git clone https://github.com/ordor2k/dns-fallback-pihole.git
+cd dns-fallback-pihole
     ```
 
 2.  **Configure `config.ini`**: ⚙️
