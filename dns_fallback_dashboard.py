@@ -1,329 +1,253 @@
-from flask import Flask, render_template_string, send_file, Response, request, redirect, url_for, flash
 import os
-import sys # Used for sys.exit later if we remove it directly
-from collections import defaultdict
-import re
-import time
+import sys
 import logging
 import logging.handlers
+import configparser
+import time
+from datetime import datetime
+from flask import Flask, render_template_string, request, redirect, url_for
+
+# --- Configuration File Path ---
+CONFIG_FILE = "/opt/dns-fallback/config.ini"
+
+# --- Load Configuration ---
+config = configparser.ConfigParser()
+if not os.path.exists(CONFIG_FILE):
+    # Fallback to defaults if config is missing for dashboard, but log a critical error
+    LOG_FILE_PATH = "/var/log/dns-fallback.log"
+    PID_FILE_PATH = "/var/run/dns-fallback.pid"
+    DASHBOARD_PORT = 8053
+    DASHBOARD_LOG_FILE = LOG_FILE_PATH # Default to main log file if not specified
+else:
+    try:
+        config.read(CONFIG_FILE)
+        # Dashboard settings
+        # Dashboard needs proxy's log and PID files to display status
+        LOG_FILE_PATH = config.get('Proxy', 'log_file', fallback="/var/log/dns-fallback.log")
+        PID_FILE_PATH = config.get('Proxy', 'pid_file', fallback="/var/run/dns-fallback.pid")
+        DASHBOARD_PORT = config.getint('Dashboard', 'dashboard_port', fallback=8053)
+        # Check for separate dashboard log file, default to main log file if not set
+        DASHBOARD_LOG_FILE = config.get('Dashboard', 'dashboard_log_file', fallback=LOG_FILE_PATH)
+    except Exception as e:
+        # If config parsing fails, fallback to defaults
+        LOG_FILE_PATH = "/var/log/dns-fallback.log"
+        PID_FILE_PATH = "/var/run/dns-fallback.pid"
+        DASHBOARD_PORT = 8053
+        DASHBOARD_LOG_FILE = LOG_FILE_PATH
+        sys.stderr.write(f"CRITICAL: Error reading configuration file {CONFIG_FILE} for dashboard: {e}. Using default settings.\n")
+
+# --- Logger Setup for Dashboard ---
+dashboard_log_dir = os.path.dirname(DASHBOARD_LOG_FILE)
+if not os.path.exists(dashboard_log_dir):
+    try:
+        os.makedirs(dashboard_log_dir, exist_ok=True)
+    except OSError as e:
+        sys.exit(f"Error: Could not create dashboard log directory {dashboard_log_dir}: {e}")
+
+dashboard_logger = logging.getLogger('dns_fallback_dashboard')
+dashboard_logger.setLevel(logging.INFO)
+
+file_handler_dashboard = logging.handlers.RotatingFileHandler(
+    DASHBOARD_LOG_FILE,
+    maxBytes=5 * 1024 * 1024, # Smaller dashboard log file size
+    backupCount=2
+)
+formatter_dashboard = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+file_handler_dashboard.setFormatter(formatter_dashboard)
+dashboard_logger.addHandler(file_handler_dashboard)
+
+# Console handler for dashboard (useful for Flask's output during development/testing)
+console_handler_dashboard = logging.StreamHandler(sys.stdout)
+console_handler_dashboard.setFormatter(formatter_dashboard)
+dashboard_logger.addHandler(console_handler_dashboard)
+
+dashboard_logger.info("DNS Fallback Dashboard logger initialized.")
+# --- End Logger Setup ---
 
 app = Flask(__name__)
-app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dns-dashboard-secret-change-me')
-LOG_FILE = os.environ.get('DNS_LOG_FILE', '/var/log/dns-fallback.log')
 
-# Setup logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
+# HTML template for the dashboard
 HTML_TEMPLATE = """
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
 <head>
-    <title>DNS Fallback Dashboard</title>
-    <meta http-equiv="refresh" content="10">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>📡</text></svg>">
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="refresh" content="10"> <title>DNS Fallback Pi-hole Dashboard</title>
     <style>
-        body { font-family: Arial; margin: 2em; background: #f8f9fa; color: #333; transition: background 0.3s; }
-        h1 { color: #007bff; }
-        table { width: 100%; border-collapse: collapse; margin-top: 1em; }
-        th, td { padding: 8px 12px; border: 1px solid #ccc; text-align: left; }
-        th { background: #007bff; color: #fff; }
-        body.dark-mode { background: #121212; color: #eee; }
-        body.dark-mode th { background: #333; color: #eee; }
-        .toggle { position: fixed; top: 1em; right: 2em; z-index: 1000; }
-        .download-panel { margin-top: 2em; width: 240px; background: #f0f0f0; padding: 1em; border-radius: 8px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
-        .download-panel h3 { margin-top: 0; font-size: 1.2em; }
-        .download-panel button { width: 100%; margin: 4px 0; padding: 8px; }
-        .dark-mode .download-panel { background: #1e1e1e; color: #ddd; }
-        .dark-mode .download-panel button { background: #333; color: #fff; border: 1px solid #555; }
-        .log-cleaner { margin-top: 3em; padding: 1em; border: 1px solid #ccc; background: #fdfdfd; max-width: 320px; }
-        .dark-mode .log-cleaner { background: #1e1e1e; border-color: #444; color: #ddd; }
-        .flash-message { margin-top: 1em; padding: 0.5em 1em; border-radius: 5px; font-weight: bold; }
-        .flash-success { background: #dff0d8; border: 1px solid #b2dba1; color: #3c763d; }
-        .flash-error { background: #f8d7da; border: 1px solid #f5c2c7; color: #842029; }
-        .error-message { background: #f8d7da; border: 1px solid #f5c2c7; color: #842029; padding: 1em; margin: 1em 0; border-radius: 5px; }
-        @keyframes fadeout { from { opacity: 1; } to { opacity: 0; } }
+        body { font-family: 'Arial', sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); max-width: 900px; margin: auto; }
+        h1, h2 { color: #0056b3; }
+        pre { background-color: #eee; padding: 15px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; max-height: 500px; }
+        .status { margin-bottom: 20px; padding: 10px; border-radius: 5px; font-weight: bold; }
+        .status.ok { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .status.warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .status.error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .refresh-button { padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; display: inline-block; margin-top: 10px; }
+        .refresh-button:hover { background-color: #0056b3; }
     </style>
 </head>
 <body>
-    <div class="toggle">
-        <label><input type="checkbox" id="darkToggle"> 🌙 Dark Mode</label>
-    </div>
-    <h1>DNS Fallback Dashboard</h1>
-    {% with messages = get_flashed_messages(with_categories=true) %}
-        {% if messages %}
-            <div id="flashMessage" class="flash-message {{ 'flash-success' if messages[0][0] == 'success' else 'flash-error' }}">{{ messages[0][1] }}</div>
-        {% endif %}
-    {% endwith %}
-    
-    {% if error %}
-        <div class="error-message">{{ error }}</div>
-    {% endif %}
-    
-    <p>Total Queries: <strong>{{ total }}</strong></p>
-    <p>Fallbacks Used: <strong>{{ fallback }}</strong></p>
-    <p>Success Rate: <strong>{{ success_rate }}%</strong></p>
-    
-    <h2>Top 10 Fallback Domains</h2>
-    <table>
-        <tr><th>Domain</th><th>Count</th></tr>
-        {% for domain, count in top_domains %}
-        <tr><td>{{ domain }}</td><td>{{ count }}</td></tr>
-        {% endfor %}
-        {% if not top_domains %}
-        <tr><td colspan="2">No fallback domains found</td></tr>
-        {% endif %}
-    </table>
+    <div class="container">
+        <h1>DNS Fallback Pi-hole Dashboard</h1>
 
-    <div class="download-panel">
-        <h3>📦 Downloads</h3>
-        <a href="/download-log"><button>⬇️ Full Log</button></a>
-        <a href="/download-fallbacks"><button>🎯 Fallbacks Only</button></a>
-        <a href="/download-queries"><button>🔍 Queries Only</button></a>
-        <a href="/download-domains"><button>📊 Unique Domains CSV</button></a>
-    </div>
+        <p>This dashboard provides a quick overview of the DNS Fallback Proxy status.</p>
 
-    <div class="log-cleaner">
-        <h3>🧹 Clean Log</h3>
-        <form method="post" action="/clean-log" onsubmit="return confirm('Are you sure you want to clean the log?');">
-            <label>Remove entries older than <input type="number" name="days" value="7" min="1" max="365"> days</label>
-            <button type="submit">🧽 Clean Log</button>
-        </form>
-    </div>
-    <script>
-        const toggle = document.getElementById('darkToggle');
-        if (localStorage.getItem('dark-mode') === 'true') {
-            toggle.checked = true;
-            document.body.classList.add('dark-mode');
-        }
-        toggle.addEventListener('change', () => {
-            const enabled = toggle.checked;
-            document.body.classList.toggle('dark-mode', enabled);
-            localStorage.setItem('dark-mode', enabled);
-        });
+        <div class="status {{ status_class }}">
+            <p><strong>Proxy Status:</strong> {{ pid_status }}</p>
+            <p><strong>Active DNS:</strong> {{ active_dns_server }}</p>
+            <p><strong>Last Status Update:</strong> {{ last_status_update }}</p>
+            <p><strong>Health Check Interval:</strong> {{ health_check_interval }} seconds</p>
+            <p><strong>Failure Threshold:</strong> {{ failure_threshold }} consecutive failures</p>
+        </div>
 
-        const flash = document.getElementById('flashMessage');
-        if (flash) {
-            setTimeout(() => {
-                flash.style.animation = "fadeout 1s forwards";
-                setTimeout(() => location.reload(), 1000);
-            }, 2500);
-        }
-    </script>
+        <a href="{{ url_for('index') }}" class="refresh-button">Refresh Now</a>
+
+        <h2>Proxy Log ({{ log_file_path }})</h2>
+        <pre>{{ log_content }}</pre>
+    </div>
 </body>
 </html>
 """
 
-def parse_log_file():
-    """Parse log file with improved error handling and correct pattern matching"""
-    total_queries = 0
-    fallback_hits = 0
-    domain_stats = defaultdict(int)
-    error_message = None
+@app.route('/')
+def index():
+    """
+    Renders the main dashboard page, displaying proxy status and logs.
+    """
+    dashboard_logger.info(f"Dashboard accessed by {request.remote_addr}.")
 
-    if not os.path.exists(LOG_FILE):
-        return 0, 0, {}, "Log file not found"
+    log_content = "Log file not found or inaccessible."
+    pid_status = "PID file not found. Proxy may not be running."
+    active_dns_server = "Unknown"
+    last_status_update = "N/A"
+    status_class = "error" # Default status
 
+    # Get configuration values for display
+    primary_dns = config.get('Proxy', 'primary_dns', fallback='N/A')
+    fallback_dns = config.get('Proxy', 'fallback_dns', fallback='N/A')
+    health_check_interval = config.get('Proxy', 'health_check_interval', fallback='N/A')
+    failure_threshold = config.get('Proxy', 'failure_threshold', fallback='N/A')
+
+    # Read log file content
     try:
-        with open(LOG_FILE, "r", encoding='utf-8', errors='ignore') as log:
-            for line_num, line in enumerate(log, 1):
-                try:
-                    # Fixed: Correct pattern matching for queries
-                    if "→ Query:" in line or "Query:" in line:
-                        total_queries += 1
-                    
-                    # Fixed: Correct pattern matching for fallbacks
-                    elif "Fallback used for" in line:
-                        fallback_hits += 1
-                        # Extract domain from the log line
-                        match = re.search(r'Fallback used for (.+?)(?:\s|$)', line)
-                        if match:
-                            domain = match.group(1).strip()
-                            domain_stats[domain] += 1
+        if os.path.exists(LOG_FILE_PATH):
+            with open(LOG_FILE_PATH, 'r') as f:
+                log_content = f.read()
+            # Attempt to determine status from log content
+            if log_content:
+                latest_switch_to_primary = None
+                latest_switch_to_fallback = None
+                proxy_started = False
                 
-                except Exception as e:
-                    logger.warning(f"Error parsing line {line_num}: {e}")
-                    continue
-                    
-    except PermissionError:
-        error_message = "Permission denied reading log file"
-    except Exception as e:
-        error_message = f"Error reading log file: {str(e)}"
-        logger.error(f"Log parsing error: {e}")
-
-    return total_queries, fallback_hits, domain_stats, error_message
-
-@app.route("/")
-def dashboard():
-    """Main dashboard with improved error handling"""
-    try:
-        total_queries, fallback_hits, domain_stats, error_message = parse_log_file()
-        
-        # Calculate success rate
-        success_rate = 0
-        if total_queries > 0:
-            success_rate = round(((total_queries - fallback_hits) / total_queries) * 100, 1)
-        
-        top_domains = sorted(domain_stats.items(), key=lambda x: x[1], reverse=True)[:10]
-
-        return render_template_string(
-            HTML_TEMPLATE,
-            total=total_queries,
-            fallback=fallback_hits,
-            success_rate=success_rate,
-            top_domains=top_domains,
-            error=error_message
-        )
-    except Exception as e:
-        logger.error(f"Dashboard error: {e}")
-        return render_template_string(
-            HTML_TEMPLATE,
-            total=0,
-            fallback=0,
-            success_rate=0,
-            top_domains=[],
-            error=f"Dashboard error: {str(e)}"
-        )
-
-@app.route("/clean-log", methods=["POST"])
-def clean_log():
-    """Clean log with improved input validation and error handling"""
-    try:
-        # Fixed: Input validation
-        days_str = request.form.get("days", "7")
-        try:
-            days = int(days_str)
-            if days < 1 or days > 365:
-                raise ValueError("Days must be between 1 and 365")
-        except ValueError as e:
-            flash(("error", f"⚠️ Invalid days value: {e}"))
-            return redirect(url_for("dashboard"))
-        
-        cutoff_time = time.time() - (days * 86400)
-        cleaned_lines = []
-
-        if not os.path.exists(LOG_FILE):
-            flash(("error", "⚠️ Log file not found."))
-            return redirect(url_for("dashboard"))
-
-        # Fixed: Better file handling with backup
-        backup_file = f"{LOG_FILE}.backup"
-        try:
-            # Create backup
-            with open(LOG_FILE, "r") as original:
-                with open(backup_file, "w") as backup:
-                    backup.write(original.read())
-            
-            # Clean log
-            with open(LOG_FILE, "r") as file:
-                for line in file:
+                # Iterate lines in reverse for efficiency
+                for line in reversed(log_content.splitlines()):
+                    if "DNS Fallback Proxy listening on" in line:
+                        proxy_started = True
+                    if "Primary DNS is now healthy. Switching back." in line:
+                        latest_switch_to_primary = line
+                        break # Found the most recent switch to primary
+                    elif "Primary DNS is unhealthy" in line and "Switching to fallback" in line:
+                        latest_switch_to_fallback = line
+                        break # Found the most recent switch to fallback
+                
+                if latest_switch_to_primary:
+                    active_dns_server = f"Primary ({primary_dns})"
+                    status_class = "ok"
                     try:
-                        timestamp_match = re.match(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
-                        if timestamp_match:
-                            log_time = time.mktime(time.strptime(timestamp_match.group(1), "%Y-%m-%d %H:%M:%S"))
-                            if log_time > cutoff_time:
-                                cleaned_lines.append(line)
-                        else:
-                            # Keep lines without timestamps (might be continuation lines)
-                            cleaned_lines.append(line)
-                    except Exception as e:
-                        logger.warning(f"Error processing log line: {e}")
-                        cleaned_lines.append(line)  # Keep problematic lines rather than lose them
-            
-            # Write cleaned log
-            with open(LOG_FILE, "w") as file:
-                file.writelines(cleaned_lines)
-            
-            # Remove backup if successful
-            os.remove(backup_file)
-            
-            flash(("success", f"✅ Log cleaned! Retained entries from the last {days} day(s)."))
-            
-        except Exception as e:
-            # Restore from backup if something went wrong
-            if os.path.exists(backup_file):
-                try:
-                    with open(backup_file, "r") as backup:
-                        with open(LOG_FILE, "w") as original:
-                            original.write(backup.read())
-                    os.remove(backup_file)
-                except Exception:
-                    pass
-            flash(("error", f"⚠️ Error cleaning log: {str(e)}"))
-            
-    except Exception as e:
-        flash(("error", f"⚠️ Unexpected error: {str(e)}"))
-        logger.error(f"Clean log error: {e}")
-    
-    return redirect(url_for("dashboard"))
+                        # Extract timestamp from log line: YYYY-MM-DD HH:MM:SS,ms - LEVEL - Message
+                        timestamp_str = latest_switch_to_primary.split(' - ')[0]
+                        dt_object = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S,%f')
+                        last_status_update = dt_object.strftime('%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        pass # Fallback to N/A if parsing fails
 
-@app.route("/download-log")
-def download_log():
-    """Download log with error handling"""
+                elif latest_switch_to_fallback:
+                    active_dns_server = f"Fallback ({fallback_dns})"
+                    status_class = "warning"
+                    try:
+                        timestamp_str = latest_switch_to_fallback.split(' - ')[0]
+                        dt_object = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S,%f')
+                        last_status_update = dt_object.strftime('%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        pass
+
+                elif proxy_started:
+                    # If proxy started but no switch events, assume primary is active
+                    active_dns_server = f"Primary ({primary_dns}) (default)"
+                    status_class = "ok"
+                    # Try to find the start time from logs
+                    for line in log_content.splitlines():
+                        if "DNS Fallback Proxy listening on" in line:
+                            try:
+                                timestamp_str = line.split(' - ')[0]
+                                dt_object = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S,%f')
+                                last_status_update = dt_object.strftime('%Y-%m-%d %H:%M:%S')
+                                break
+                            except ValueError:
+                                pass
+                else:
+                    active_dns_server = "Unknown (Proxy might not have started successfully)"
+                    status_class = "error"
+            else:
+                log_content = "Log file is empty."
+                active_dns_server = "Unknown (Log file empty)"
+                status_class = "warning"
+
+        else:
+            dashboard_logger.warning(f"Log file not found at {LOG_FILE_PATH}.")
+            log_content = "Log file not found. Ensure proxy is running and configured correctly."
+            active_dns_server = "Unknown (Log file missing)"
+
+    except FileNotFoundError:
+        dashboard_logger.error(f"Log file path incorrect or file does not exist: {LOG_FILE_PATH}")
+        log_content = f"Log file not found at '{LOG_FILE_PATH}'. Check configuration."
+    except IOError as e:
+        dashboard_logger.error(f"Error reading log file {LOG_FILE_PATH}: {e}")
+        log_content = f"Error reading log file: {e}"
+    except Exception as e:
+        dashboard_logger.exception("An unexpected error occurred while processing log file.")
+        log_content = f"An unexpected error occurred reading logs: {e}"
+
+
+    # Check PID file status
     try:
-        if not os.path.exists(LOG_FILE):
-            flash(("error", "⚠️ Log file not found."))
-            return redirect(url_for("dashboard"))
-        return send_file(LOG_FILE, as_attachment=True, download_name="dns-fallback.log")
+        if os.path.exists(PID_FILE_PATH):
+            with open(PID_FILE_PATH, 'r') as f:
+                pid = f.read().strip()
+                pid_status = f"Proxy running with PID: {pid}"
+                # If active_dns_server is still 'Unknown', assume running and healthy.
+                if active_dns_server.startswith("Unknown"):
+                    active_dns_server = f"Primary ({primary_dns}) (assumed)"
+                    status_class = "ok"
+                dashboard_logger.info(f"PID file found: {PID_FILE_PATH}.")
+        else:
+            pid_status = "PID file not found. Proxy may not be running or path is incorrect."
+            status_class = "error" # If PID file not found, proxy is likely not running.
+            dashboard_logger.warning(f"PID file not found at {PID_FILE_PATH}.")
+    except FileNotFoundError:
+        dashboard_logger.error(f"PID file path incorrect or file does not exist: {PID_FILE_PATH}")
+        pid_status = f"PID file not found at '{PID_FILE_PATH}'. Check configuration."
+    except IOError as e:
+        dashboard_logger.error(f"Error reading PID file {PID_FILE_PATH}: {e}")
+        pid_status = f"Error reading PID file: {e}"
     except Exception as e:
-        flash(("error", f"⚠️ Error downloading log: {str(e)}"))
-        return redirect(url_for("dashboard"))
+        dashboard_logger.exception("An unexpected error occurred while processing PID file.")
+        pid_status = f"An unexpected error occurred reading PID file: {e}"
 
-@app.route("/download-fallbacks")
-def download_fallbacks():
-    """Download fallback entries only"""
-    try:
-        lines = []
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = [line for line in f if "Fallback used for" in line]
-        
-        content = "".join(lines) if lines else "No fallback entries found\n"
-        return Response(content, mimetype="text/plain", headers={
-            "Content-Disposition": "attachment; filename=fallbacks.log"
-        })
-    except Exception as e:
-        flash(("error", f"⚠️ Error downloading fallbacks: {str(e)}"))
-        return redirect(url_for("dashboard"))
 
-@app.route("/download-queries")
-def download_queries():
-    """Download query entries only"""
-    try:
-        lines = []
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, 'r', encoding='utf-8', errors='ignore') as f:
-                lines = [line for line in f if ("→ Query:" in line or "Query:" in line)]
-        
-        content = "".join(lines) if lines else "No query entries found\n"
-        return Response(content, mimetype="text/plain", headers={
-            "Content-Disposition": "attachment; filename=queries.log"
-        })
-    except Exception as e:
-        flash(("error", f"⚠️ Error downloading queries: {str(e)}"))
-        return redirect(url_for("dashboard"))
+    return render_template_string(
+        HTML_TEMPLATE,
+        log_content=log_content,
+        log_file_path=LOG_FILE_PATH,
+        pid_status=pid_status,
+        active_dns_server=active_dns_server,
+        last_status_update=last_status_update,
+        status_class=status_class,
+        health_check_interval=health_check_interval,
+        failure_threshold=failure_threshold
+    )
 
-@app.route("/download-domains")
-def download_domains():
-    """Download unique fallback domains as CSV"""
-    try:
-        domains = set()
-        if os.path.exists(LOG_FILE):
-            with open(LOG_FILE, 'r', encoding='utf-8', errors='ignore') as f:
-                for line in f:
-                    if "Fallback used for" in line:
-                        match = re.search(r'Fallback used for (.+?)(?:\s|$)', line)
-                        if match:
-                            domain = match.group(1).strip()
-                            domains.add(domain)
-        
-        csv_content = "domain\n" + "\n".join(sorted(domains)) if domains else "domain\nNo fallback domains found"
-        return Response(csv_content, mimetype="text/csv", headers={
-            "Content-Disposition": "attachment; filename=fallback_domains.csv"
-        })
-    except Exception as e:
-        flash(("error", f"⚠️ Error downloading domains: {str(e)}"))
-        return redirect(url_for("dashboard"))
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8053, debug=False)
+if __name__ == '__main__':
+    dashboard_logger.info(f"DNS Fallback Dashboard running on http://0.0.0.0:{DASHBOARD_PORT}")
+    app.run(host='0.0.0.0', port=DASHBOARD_PORT, debug=False) # debug=False for production
