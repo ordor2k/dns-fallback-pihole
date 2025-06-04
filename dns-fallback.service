@@ -5,6 +5,7 @@ After=network.target
 [Service]
 Type=simple
 Environment=DNS_LISTEN_PORT=5355
+Environment=PRIMARY_DNS_PORT=5335
 ExecStart=/usr/bin/python3 /usr/local/bin/dns-fallback/dns_fallback_proxy.py
 Restart=on-failure
 StandardOutput=append:/var/log/dns-fallback.log
