@@ -98,11 +98,11 @@ pid_file = /var/run/dns-fallback.pid
 
 # Buffer size for UDP DNS packets
 buffer_size = 4096
-```
+
 [Dashboard]
 # The port the dashboard web interface will listen on
 dashboard_port = 8053
-
+```
 # Path for the dashboard's log file. Can be the same as proxy log or separate.
 # If you want a separate log for the dashboard, uncomment the line below:
 # dashboard_log_file = /var/log/dns-fallback_dashboard.log
