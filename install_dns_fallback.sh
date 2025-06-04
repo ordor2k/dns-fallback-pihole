@@ -65,7 +65,7 @@ fi
 # Set ownership for the project directory and files (if running as root, this ensures root owns them)
 chown -R root:root "$PROJECT_DIR" || { echo "Warning: Failed to set ownership for $PROJECT_DIR."; }
 chmod 644 "$PROJECT_DIR"/*.py || { echo "Warning: Failed to set permissions for python scripts."; }
-chmod 755 "$PROJECT_DIR"/*.sh # If you add any executable shell scripts here
+#chmod 755 "$PROJECT_DIR"/*.sh # If you add any executable shell scripts here
 
 
 # Create log directory and ensure permissions (if not already done by system)
