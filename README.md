@@ -98,7 +98,7 @@ pid_file = /var/run/dns-fallback.pid
 
 # Buffer size for UDP DNS packets
 buffer_size = 4096
-
+```
 [Dashboard]
 # The port the dashboard web interface will listen on
 dashboard_port = 8053
