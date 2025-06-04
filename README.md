@@ -11,6 +11,7 @@ Enhance your Pi-hole's reliability with this robust DNS proxy! 🌟 It automatic
 * **install_dns_fallback.sh**: 🛠️ Installation script for setting up the entire project.
 * **pi-hole.conf**: ⚙️ Pi-hole configuration snippet to direct queries to the proxy.
 * **uninstall_dns_fallback.sh**: 🛠️ Script for a complete removal of the project components.
+* **update_dns_fallback.sh**: 🔄 **NEW!** Script for easily updating the project files.
 * **CHANGELOG.md**: 📝 Documents all notable changes and updates.
 * **LICENSE**: 📜 Details the project's licensing information.
 * **README.md**: ℹ️ This documentation file you're reading.
@@ -200,6 +201,32 @@ For users who prefer a step-by-step installation process, you can follow these m
     ```bash
     pihole restartdns
     ```
+
+---
+
+## 🔄 Updating the Project
+
+To easily update your DNS Fallback Pi-hole installation to the latest version:
+
+1.  **Navigate to your cloned project directory:**
+    ```bash
+    cd dns-fallback-pihole # (e.g., /home/pi/dns-fallback-pihole)
+    ```
+
+2.  **Run the update script:**
+    ```bash
+    sudo ./update_dns_fallback.sh
+    ```
+
+This script will:
+* Stop the proxy and dashboard services.
+* Pull the latest changes from the GitHub repository (`git pull`).
+* Copy updated Python scripts, `systemd` service files, and `logrotate` configuration to their respective system locations.
+* **Preserve your `config.ini` file**, so your custom settings remain intact.
+* Reload `systemd` and restart both services.
+* Restart Pi-hole's DNS resolver.
+
+**Important:** After updating, always check the `CHANGELOG.md` for any new configuration options that might have been added to the default `config.ini`. You may need to manually add these to your existing `/opt/dns-fallback/config.ini` file.
 
 ---
 
