@@ -1,9 +1,11 @@
 from flask import Flask, render_template_string, send_file, Response, request, redirect, url_for, flash
 import os
+import sys # Used for sys.exit later if we remove it directly
 from collections import defaultdict
 import re
 import time
 import logging
+import logging.handlers
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('FLASK_SECRET_KEY', 'dns-dashboard-secret-change-me')
