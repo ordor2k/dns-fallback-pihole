@@ -59,4 +59,8 @@ rm -rf "$PROJECT_DIR" || { echo "Warning: Failed to remove $PROJECT_DIR. Manual 
 echo "Cleaning up PID files..."
 rm -f /var/run/dns-fallback.pid || { echo "Warning: Failed to remove /var/run/dns-fallback.pid (may not exist)."; }
 
+# Remove the cloned repository directory
+echo "Removing the cloned dns-fallback-pihole repository directory..."
+rm -rf ../dns-fallback-pihole
+
 echo "DNS Fallback Pi-hole uninstallation complete!"
