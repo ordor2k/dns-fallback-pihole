@@ -27,6 +27,15 @@ quick_fix_dependencies() {
     # Stop the failing service first
     systemctl stop dns-fallback.service 2>/dev/null || true
     
+    # Install bc if missing
+    if ! command_exists bc; then
+        log "Installing bc for performance calculations..."
+        apt update >/dev/null 2>&1 || true
+        apt install -y bc >/dev/null 2>&1 || {
+            log_warning "Failed to install bc"
+        }
+    fi
+    
     # Check for virtual environment and install dependencies there first
     local venv_found=false
     for venv_path in "$PROJECT_DIR/venv" "/opt/dns-fallback-venv"; do
@@ -344,6 +353,15 @@ validate_repository() {
 update_dependencies() {
     log "Checking and updating Python dependencies..."
     
+    # Install bc if missing
+    if ! command_exists bc; then
+        log "Installing bc for performance calculations..."
+        apt update >/dev/null 2>&1 || true
+        apt install -y bc >/dev/null 2>&1 || {
+            log_warning "Failed to install bc"
+        }
+    fi
+    
     # First, detect if we're using a virtual environment
     local venv_path=""
     if [ -f "$PROJECT_DIR/venv/bin/activate" ]; then
@@ -389,7 +407,15 @@ update_dependencies() {
         deactivate
     else
         log "Installing dependencies globally..."
-        install_packages "pip3"
+        # Try pip3 first, fall back to apt if externally-managed-environment
+        if ! install_packages "pip3" 2>/dev/null; then
+            log_warning "pip3 install failed, trying system packages..."
+            apt update >/dev/null 2>&1 || true
+            apt install -y python3-flask python3-dnslib >/dev/null 2>&1 || {
+                log_error "Failed to install system packages"
+                return 1
+            }
+        fi
     fi
     
     # Verify the installation by testing imports
@@ -778,11 +804,21 @@ main() {
     fi
     
     # Check required commands
-    local required_commands=("git" "python3" "pip3" "systemctl")
+    local required_commands=("git" "python3" "pip3" "systemctl" "bc")
     for cmd in "${required_commands[@]}"; do
         if ! command_exists "$cmd"; then
-            log_error "Required command not found: $cmd"
-            exit 1
+            if [ "$cmd" = "bc" ]; then
+                log_warning "bc not found, installing..."
+                apt update >/dev/null 2>&1 || true
+                apt install -y bc >/dev/null 2>&1 || {
+                    log_error "Failed to install bc. Please install manually: sudo apt install bc"
+                    exit 1
+                }
+                log_success "bc installed successfully"
+            else
+                log_error "Required command not found: $cmd"
+                exit 1
+            fi
         fi
     done
     
