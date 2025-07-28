@@ -114,11 +114,23 @@ class DNSProxy:
         with self._state_lock:
             return self._current_dns
 
+    def _parse_addr(self, addr_str: str) -> Tuple[str, int]:
+        """Parse address string, e.g., '127.0.0.1:5335' or '8.8.8.8'."""
+        if ':' in addr_str:
+            host, port = addr_str.rsplit(':', 1)
+            try:
+                port = int(port)
+            except ValueError:
+                port = DNS_STANDARD_PORT
+            return host, port
+        return addr_str, DNS_STANDARD_PORT
+
     def _send_dns_query(self, dns_server: str, query_data: bytes, timeout: float = 2.0) -> Optional[bytes]:
+        host, port = self._parse_addr(dns_server)
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 sock.settimeout(timeout)
-                sock.sendto(query_data, (dns_server, DNS_STANDARD_PORT))
+                sock.sendto(query_data, (host, port))
                 return sock.recvfrom(self.config.buffer_size)[0]
         except socket.timeout:
             self.logger.warning(f"DNS query to {dns_server} timed out.")
