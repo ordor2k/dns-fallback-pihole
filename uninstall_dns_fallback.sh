@@ -1,66 +1,69 @@
 #!/bin/bash
-set -e # Exit immediately if a command exits with a non-zero status
 
-echo "Starting DNS Fallback Pi-hole uninstallation..."
+# Enhanced DNS Fallback Uninstall Script
 
-# Define project directory
-PROJECT_DIR="/opt/dns-fallback"
-PIHOLE_DNS_FILE="/etc/dnsmasq.d/01-pihole.conf" # Standard Pi-hole custom config location
+set -e
 
-# Check for root privileges
-if [ "$EUID" -ne 0 ]; then
-    echo "Please run as root: sudo ./uninstall_dns_fallback.sh"
-    exit 1
-fi
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-# Stop and disable services
-echo "Stopping and disabling DNS Fallback services..."
-systemctl stop dns-fallback-dashboard.service || { echo "Warning: Failed to stop dns-fallback-dashboard service."; }
-systemctl disable dns-fallback-dashboard.service || { echo "Warning: Failed to disable dns-fallback-dashboard service."; }
-systemctl stop dns-fallback.service || { echo "Warning: Failed to stop dns-fallback service."; }
-systemctl disable dns-fallback.service || { echo "Warning: Failed to disable dns-fallback service."; }
+# Configuration
+INSTALL_DIR="/opt/dns-fallback"
+CONFIG_DIR="/etc/dns-fallback"
+LOG_DIR="/var/log"
+SERVICE_DIR="/etc/systemd/system"
+BIN_DIR="/usr/local/bin"
 
+# Service names
+PROXY_SERVICE="dns-fallback.service"
+DASHBOARD_SERVICE="dns-fallback-dashboard.service"
 
-# Remove systemd service files
-echo "Removing systemd service files..."
-rm -f /etc/systemd/system/dns-fallback.service || { echo "Warning: Failed to remove dns-fallback.service."; }
-rm -f /etc/systemd/system/dns-fallback-dashboard.service || { echo "Warning: Failed to remove dns-fallback-dashboard.service."; }
+# Print functions
+print_header() {
+    echo -e "${BLUE}============================================${NC}"
+    echo -e "${BLUE}  Enhanced DNS Fallback Uninstallation${NC}"
+    echo -e "${BLUE}============================================${NC}"
+    echo ""
+}
 
-# Reload systemd daemon
-echo "Reloading systemd daemon..."
-systemctl daemon-reload || { echo "Warning: Failed to reload systemd daemon."; }
+print_success() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
 
+print_warning() {
+    echo -e "${YELLOW}⚠ $1${NC}"
+}
 
-# Remove dns-fallback configuration from Pi-hole
-echo "Removing dns-fallback configuration from Pi-hole..."
-if [ -f "$PIHOLE_DNS_FILE" ]; then
-    # Use sed to remove the exact line.
-    # This specifically targets 'server=127.0.0.1#5353' if it exists.
-    sed -i '/^server=127.0.0.1#5353$/d' "$PIHOLE_DNS_FILE"
-    echo "DNS Fallback entry removed from Pi-hole configuration."
-else
-    echo "Pi-hole configuration file not found at $PIHOLE_DNS_FILE. Skipping Pi-hole config removal."
-fi
+print_error() {
+    echo -e "${RED}✗ $1${NC}"
+}
 
-# Restart Pi-hole's dnsmasq service to apply changes
-echo "Restarting Pi-hole FTL (dnsmasq) service..."
-pihole restartdns || { echo "Warning: Failed to restart Pi-hole DNS. You may need to restart it manually."; }
+print_info() {
+    echo -e "${BLUE}ℹ $1${NC}"
+}
 
+# Check if running as root
+check_root() {
+    if [[ $EUID -ne 0 ]]; then
+        print_error "This script must be run as root (use sudo)"
+        exit 1
+    fi
+}
 
-# Remove logrotate configuration
-echo "Removing logrotate configuration..."
-rm -f "/etc/logrotate.d/dns-fallback" || { echo "Warning: Failed to remove logrotate config."; }
-
-# Remove project directory and its contents
-echo "Removing DNS Fallback files from $PROJECT_DIR..."
-rm -rf "$PROJECT_DIR" || { echo "Warning: Failed to remove $PROJECT_DIR. Manual cleanup may be required."; }
-
-# Clean up PID files (if any were left behind unexpectedly)
-echo "Cleaning up PID files..."
-rm -f /var/run/dns-fallback.pid || { echo "Warning: Failed to remove /var/run/dns-fallback.pid (may not exist)."; }
-
-# Remove the cloned repository directory
-echo "Removing the cloned dns-fallback-pihole repository directory..."
-rm -rf ../dns-fallback-pihole
-
-echo "DNS Fallback Pi-hole uninstallation complete!"
+# Confirm uninstallation
+confirm_uninstall() {
+    echo -e "${YELLOW}This will completely remove the Enhanced DNS Fallback system.${NC}"
+    echo ""
+    print_warning "The following will be removed:"
+    echo "• DNS Fallback Proxy service"
+    echo "• Enhanced Dashboard service"
+    echo "• Configuration files"
+    echo "• Log files (optional)"
+    echo "• System service files"
+    echo ""
+    
+    while true; do
