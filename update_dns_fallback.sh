@@ -802,7 +802,7 @@ update_dependencies() {
         source "$venv_path/bin/activate"
         install_packages "pip"
         deactivate
-    else
+	else
         log "Installing dependencies globally..."
         # Attempt global pip3 installation first
         pip3 install dnslib flask --upgrade || {
