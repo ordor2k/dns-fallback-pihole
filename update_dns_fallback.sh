@@ -27,23 +27,45 @@ quick_fix_dependencies() {
     # Stop the failing service first
     systemctl stop dns-fallback.service 2>/dev/null || true
     
-    # Try multiple installation methods
-    log "Installing dnslib and flask globally..."
-    pip3 install dnslib flask --upgrade --force-reinstall || {
-        log_warning "Global pip3 install failed, trying apt..."
-        apt update >/dev/null 2>&1 || true
-        apt install -y python3-dnslib python3-flask 2>/dev/null || true
-    }
-    
-    # Also install in common virtual environment locations
+    # Check for virtual environment and install dependencies there first
+    local venv_found=false
     for venv_path in "$PROJECT_DIR/venv" "/opt/dns-fallback-venv"; do
         if [ -d "$venv_path" ]; then
-            log "Installing in virtual environment: $venv_path"
-            source "$venv_path/bin/activate" 2>/dev/null || continue
-            pip install dnslib flask --upgrade --force-reinstall 2>/dev/null || true
+            log "Installing dependencies in virtual environment: $venv_path"
+            source "$venv_path/bin/activate" 2>/dev/null || {
+                log_warning "Failed to activate virtual environment at $venv_path"
+                continue
+            }
+            
+            pip install dnslib flask --upgrade --force-reinstall || {
+                log_warning "Failed to install in virtual environment $venv_path"
+                deactivate 2>/dev/null || true
+                continue
+            }
+            
+            # Test the installation
+            python -c "import dnslib, flask; print('Dependencies installed successfully')" || {
+                log_warning "Dependencies test failed in $venv_path"
+                deactivate 2>/dev/null || true
+                continue
+            }
+            
+            log_success "Dependencies installed successfully in $venv_path"
             deactivate 2>/dev/null || true
+            venv_found=true
+            break
         fi
     done
+    
+    # If no virtual environment worked, try global installation
+    if [ "$venv_found" = false ]; then
+        log "Installing dnslib and flask globally as fallback..."
+        pip3 install dnslib flask --upgrade --force-reinstall || {
+            log_warning "Global pip3 install failed, trying apt..."
+            apt update >/dev/null 2>&1 || true
+            apt install -y python3-dnslib python3-flask 2>/dev/null || true
+        }
+    fi
     
     log_success "Quick dependency fix applied"
 }
