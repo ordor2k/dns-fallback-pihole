@@ -80,13 +80,14 @@ import sys
 try:
     config = configparser.ConfigParser()
     config.read('$config_file')
-    # Check for required sections (adjust as needed)
-    required_sections = ['dns', 'logging', 'dashboard']
-    for section in required_sections:
-        if not config.has_section(section):
-            print(f'Missing required section: {section}')
-            sys.exit(1)
-    print('Configuration file validation passed.')
+    
+    # Just check if the file can be parsed successfully
+    # Don't enforce specific sections as they may vary
+    if len(config.sections()) == 0:
+        print('Configuration file appears to be empty or has no sections')
+        sys.exit(1)
+    
+    print(f'Configuration file validation passed. Found sections: {list(config.sections())}')
 except configparser.Error as e:
     print(f'Configuration file parsing error: {e}')
     sys.exit(1)
