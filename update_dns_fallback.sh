@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # DNS Fallback Pi-hole Update Script
-# Version: 2.0
+# Version: 2.1
 # Description: Updates DNS Fallback Pi-hole system with enhanced error handling and validation
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
@@ -19,6 +19,34 @@ SYSTEMD_DIR="/etc/systemd/system"
 LOGROTATE_DIR="/etc/logrotate.d"
 LOG_DIR="/var/log/dns-fallback"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
+# Quick fix for missing dependencies
+quick_fix_dependencies() {
+    log "Applying quick fix for missing dependencies..."
+    
+    # Stop the failing service first
+    systemctl stop dns-fallback.service 2>/dev/null || true
+    
+    # Try multiple installation methods
+    log "Installing dnslib and flask globally..."
+    pip3 install dnslib flask --upgrade --force-reinstall || {
+        log_warning "Global pip3 install failed, trying apt..."
+        apt update >/dev/null 2>&1 || true
+        apt install -y python3-dnslib python3-flask 2>/dev/null || true
+    }
+    
+    # Also install in common virtual environment locations
+    for venv_path in "$PROJECT_DIR/venv" "/opt/dns-fallback-venv"; do
+        if [ -d "$venv_path" ]; then
+            log "Installing in virtual environment: $venv_path"
+            source "$venv_path/bin/activate" 2>/dev/null || continue
+            pip install dnslib flask --upgrade --force-reinstall 2>/dev/null || true
+            deactivate 2>/dev/null || true
+        fi
+    done
+    
+    log_success "Quick dependency fix applied"
+}
 
 # Logging function
 log() {
@@ -65,6 +93,11 @@ check_service_status() {
     else
         log_error "$service_name is not running"
         systemctl status "$service_name" --no-pager -l || true
+        
+        # Show recent logs for debugging
+        log "Recent logs for $service_name:"
+        journalctl -u "$service_name" --no-pager -l -n 20 --since "1 minute ago" || true
+        
         return 1
     fi
 }
@@ -192,27 +225,75 @@ validate_repository() {
 update_dependencies() {
     log "Checking and updating Python dependencies..."
     
-    # Update pip first
-    python3 -m pip install --upgrade pip >/dev/null 2>&1 || {
-        log_warning "Failed to upgrade pip"
-    }
-    
-    # Check if requirements.txt exists
-    if [ -f "requirements.txt" ]; then
-        pip3 install -r requirements.txt --upgrade || {
-            log_warning "Failed to install from requirements.txt"
-        }
-    else
-        # Install known dependencies
-        local deps=("flask" "dnslib")
-        for dep in "${deps[@]}"; do
-            pip3 install --upgrade "$dep" >/dev/null 2>&1 || {
-                log_warning "Failed to update dependency: $dep"
-            }
-        done
+    # First, detect if we're using a virtual environment
+    local venv_path=""
+    if [ -f "$PROJECT_DIR/venv/bin/activate" ]; then
+        venv_path="$PROJECT_DIR/venv"
+        log "Virtual environment detected at: $venv_path"
+    elif [ -f "/opt/dns-fallback-venv/bin/activate" ]; then
+        venv_path="/opt/dns-fallback-venv"
+        log "Virtual environment detected at: $venv_path"
     fi
     
-    log_success "Dependencies updated"
+    # Function to install packages
+    install_packages() {
+        local pip_cmd="$1"
+        
+        # Update pip first
+        $pip_cmd install --upgrade pip >/dev/null 2>&1 || {
+            log_warning "Failed to upgrade pip"
+        }
+        
+        # Check if requirements.txt exists
+        if [ -f "requirements.txt" ]; then
+            $pip_cmd install -r requirements.txt --upgrade || {
+                log_warning "Failed to install from requirements.txt"
+            }
+        else
+            # Install known dependencies
+            local deps=("flask" "dnslib")
+            for dep in "${deps[@]}"; do
+                log "Installing/updating $dep..."
+                $pip_cmd install --upgrade "$dep" || {
+                    log_error "Failed to install dependency: $dep"
+                    return 1
+                }
+            done
+        fi
+    }
+    
+    # Install dependencies in the appropriate environment
+    if [ -n "$venv_path" ]; then
+        log "Installing dependencies in virtual environment..."
+        source "$venv_path/bin/activate"
+        install_packages "pip"
+        deactivate
+    else
+        log "Installing dependencies globally..."
+        install_packages "pip3"
+    fi
+    
+    # Verify the installation by testing imports
+    local python_executable="python3"
+    if [ -n "$venv_path" ]; then
+        python_executable="$venv_path/bin/python"
+    fi
+    
+    log "Verifying dependency installation..."
+    $python_executable -c "
+try:
+    import dnslib
+    import flask
+    print('All required modules are available')
+except ImportError as e:
+    print(f'Missing dependency: {e}')
+    exit(1)
+" || {
+        log_error "Dependency verification failed"
+        return 1
+    }
+    
+    log_success "Dependencies updated and verified"
 }
 
 # Function to stop services
@@ -322,7 +403,84 @@ handle_config() {
     validate_config "$config_file"
 }
 
-# Function to set permissions
+# Function to check port availability
+check_ports() {
+    log "Checking required ports availability..."
+    
+    local ports=("5353" "5335" "8053")
+    local port_issues=false
+    
+    for port in "${ports[@]}"; do
+        if netstat -tulpn 2>/dev/null | grep -q ":$port "; then
+            local process=$(netstat -tulpn 2>/dev/null | grep ":$port " | awk '{print $7}' | head -1)
+            log_warning "Port $port is already in use by: $process"
+            port_issues=true
+        else
+            log_success "Port $port is available"
+        fi
+    done
+    
+    if [ "$port_issues" = true ]; then
+        log_warning "Some ports are in use. This may cause service startup issues."
+        log "You may need to stop conflicting services or change port configuration."
+    fi
+}
+test_python_scripts() {
+    log "Testing Python scripts for syntax errors..."
+    
+    local scripts=("$PROJECT_DIR/dns_fallback_proxy.py" "$PROJECT_DIR/dns_fallback_dashboard.py")
+    
+    for script in "${scripts[@]}"; do
+        if [ -f "$script" ]; then
+            python3 -m py_compile "$script" 2>/dev/null || {
+                log_error "Syntax error in $(basename "$script")"
+                python3 -m py_compile "$script" || true
+                return 1
+            }
+            log_success "$(basename "$script") syntax check passed"
+        else
+            log_warning "Script not found: $script"
+        fi
+    done
+    
+    # Test if scripts can import required modules
+    log "Testing module imports..."
+    python3 -c "
+try:
+    import socket
+    import configparser
+    import threading
+    import time
+    import logging
+    import json
+    import os
+    import sys
+    print('Core modules: OK')
+    
+    try:
+        import dnslib
+        print('dnslib: OK')
+    except ImportError as e:
+        print(f'dnslib: MISSING - {e}')
+        sys.exit(1)
+    
+    try:
+        import flask
+        print('flask: OK')
+    except ImportError as e:
+        print(f'flask: MISSING - {e}')
+        sys.exit(1)
+        
+except Exception as e:
+    print(f'Module test failed: {e}')
+    sys.exit(1)
+" || {
+        log_error "Python module test failed"
+        return 1
+    }
+    
+    log_success "Python scripts and modules validated"
+}
 set_permissions() {
     log "Setting appropriate file permissions..."
     
@@ -454,10 +612,14 @@ main() {
     
     # Parse arguments
     local show_help=false
+    local quick_fix=false
     for arg in "$@"; do
         case $arg in
             --help|-h)
                 show_help=true
+                ;;
+            --quick-fix)
+                quick_fix=true
                 ;;
         esac
     done
@@ -468,6 +630,7 @@ main() {
         echo
         echo "Options:"
         echo "  --replace-config    Replace existing config.ini with the one from repository"
+        echo "  --quick-fix        Apply quick fix for dependency issues"
         echo "  --help, -h          Show this help message"
         echo
         echo "This script will:"
@@ -476,6 +639,14 @@ main() {
         echo "  - Update Python dependencies"
         echo "  - Restart all services"
         echo "  - Create a backup of your current installation"
+        exit 0
+    fi
+    
+    # Apply quick fix if requested
+    if [ "$quick_fix" = true ]; then
+        quick_fix_dependencies
+        restart_services
+        show_summary
         exit 0
     fi
     
@@ -512,6 +683,8 @@ main() {
     copy_files
     handle_config "$@"
     set_permissions
+    test_python_scripts
+    check_ports
     restart_services
     restart_pihole
     show_summary
