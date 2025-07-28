@@ -4,19 +4,19 @@ After=network.target pihole-FTL.service unbound.service
 
 [Service]
 Type=simple
-User=root
-# If you want to run as a dedicated user (recommended for security):
-# User=dnsfallback
-# Group=dnsfallback
 WorkingDirectory=/opt/dns-fallback
 ExecStart=/usr/bin/python3 /opt/dns-fallback/dns_fallback_proxy.py
 Restart=on-failure
 RestartSec=5s
-StandardOutput=file:/var/log/dns-fallback.log
-StandardError=file:/var/log/dns-fallback.log
-# Alternative for logging: use journald
-# StandardOutput=journal
-# StandardError=journal
+StandardOutput=append:/var/log/dns-fallback.log
+StandardError=append:/var/log/dns-fallback.log
+# Use a non-root user for security if possible:
+# User=dnsfallback
+# Group=dnsfallback
+# Additional hardening options:
+# ProtectSystem=full
+# PrivateTmp=true
+# NoNewPrivileges=true
 
 [Install]
 WantedBy=multi-user.target
