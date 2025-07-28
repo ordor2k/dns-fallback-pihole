@@ -191,7 +191,49 @@ backup_installation() {
     fi
 }
 
-# Function to check network connectivity
+# Function to check for GitHub updates
+check_github_updates() {
+    log "Checking for updates from GitHub..."
+    
+    cd "$SCRIPT_DIR"
+    
+    # Fetch latest changes without merging
+    git fetch origin 2>/dev/null || {
+        log_error "Failed to fetch from GitHub. Check your internet connection."
+        return 1
+    }
+    
+    # Get current branch
+    local current_branch
+    current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "main")
+    
+    # Check if there are updates available
+    local local_commit
+    local remote_commit
+    local_commit=$(git rev-parse HEAD 2>/dev/null || echo "")
+    remote_commit=$(git rev-parse "origin/$current_branch" 2>/dev/null || echo "")
+    
+    if [ "$local_commit" = "$remote_commit" ]; then
+        log_success "Repository is already up to date"
+        return 0
+    elif [ -z "$remote_commit" ]; then
+        log_warning "Could not determine remote commit. Proceeding with pull anyway."
+    else
+        # Show what changes are available
+        local commits_behind
+        commits_behind=$(git rev-list --count HEAD..origin/$current_branch 2>/dev/null || echo "unknown")
+        log "Updates available: $commits_behind commits behind origin/$current_branch"
+        
+        # Show summary of changes
+        log "Recent changes available:"
+        git log --oneline --no-merges HEAD..origin/$current_branch 2>/dev/null | head -5 | while read -r line; do
+            log "  • $line"
+        done
+    fi
+    
+    log_success "Updates found - will pull latest changes"
+    return 0
+}
 check_connectivity() {
     log "Checking network connectivity..."
     
@@ -656,6 +698,8 @@ main() {
         echo "  --help, -h          Show this help message"
         echo
         echo "This script will:"
+        echo "  - Check for updates from GitHub repository"
+        echo "  - Pull latest changes if available"
         echo "  - Update all project files from the git repository"
         echo "  - Preserve your existing configuration (unless --replace-config is used)"
         echo "  - Update Python dependencies"
@@ -690,16 +734,20 @@ main() {
     # Execute update steps
     check_connectivity
     validate_repository
+    
+    # Check for GitHub updates before proceeding
+    if check_github_updates; then
+        pull_latest_changes || {
+            log_error "Failed to pull latest changes. Aborting update."
+            exit 1
+        }
+    else
+        log_warning "Could not check for GitHub updates. Proceeding with local files."
+    fi
+    
     create_directories
     backup_installation
     stop_services
-    
-    log "Pulling latest changes from GitHub..."
-    git pull || {
-        log_error "Failed to pull latest changes. Please check your network or git configuration."
-        exit 1
-    }
-    log_success "Latest changes pulled successfully"
     
     update_dependencies
     copy_files
