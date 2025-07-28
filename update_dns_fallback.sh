@@ -57,7 +57,7 @@ systemctl restart dns-fallback.service || { echo "Error: Failed to restart proxy
 systemctl restart dns-fallback-dashboard.service || { echo "Error: Failed to restart dashboard service."; exit 1; }
 
 echo "Restarting Pi-hole FTL (dnsmasq) service..."
-pihole restartdns || { echo "Warning: Failed to restart Pi-hole DNS. You may need to restart it manually."; }
+pihole reloaddns || { echo "Warning: Failed to restart Pi-hole DNS. You may need to restart it manually."; }
 
 echo "DNS Fallback Pi-hole update complete! 🎉"
 echo "Please remember to check the CHANGELOG.md for any new configuration options or important notes."
