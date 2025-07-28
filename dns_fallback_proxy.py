@@ -679,4 +679,38 @@ class EnhancedDNSProxy:
         # Close sockets
         if self.tcp_sock:
             self.tcp_sock.close()
-        if self.udp
+        if self.udp_sock:
+            self.udp_sock.close()
+            
+        self.logger.info("Enhanced DNS Fallback Proxy shutdown complete.")
+
+def main():
+    """Main entry point with enhanced error handling"""
+    try:
+        config = load_configuration(CONFIG_FILE_PATH)
+        logger = setup_logging(config.log_file, config.structured_logging)
+        
+        # Log startup information
+        logger.info("=== Enhanced DNS Fallback Proxy Starting ===")
+        logger.info(f"Primary DNS: {config.primary_dns}")
+        logger.info(f"Fallback servers: {', '.join(config.fallback_dns_servers)}")
+        logger.info(f"Listen on: {config.listen_address}:{config.dns_port}")
+        logger.info(f"Intelligent caching: {config.intelligent_caching}")
+        logger.info(f"Query deduplication: {config.enable_query_deduplication}")
+        
+        proxy = EnhancedDNSProxy(config, logger)
+        proxy.run()
+        
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received.")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        sys.exit(1)
+    finally:
+        try:
+            proxy.shutdown()
+        except:
+            pass
+
+if __name__ == "__main__":
+    main()
