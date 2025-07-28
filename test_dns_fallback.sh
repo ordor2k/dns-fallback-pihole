@@ -3,7 +3,8 @@
 # Enhanced DNS Fallback Testing Script
 # Tests the full chain: Pi-hole → DNS Proxy → Unbound → Fallback
 
-set -e
+# Remove the problematic set -e that was causing early exits
+# set -e
 
 # Colors for output
 RED='\033[0;31m'
@@ -161,7 +162,7 @@ test_unbound_direct() {
     for domain in "${BASIC_DOMAINS[@]}"; do
         if test_dns_resolution "$UNBOUND_IP" "$UNBOUND_PORT" "$domain"; then
             print_success "Unbound resolved: $domain"
-            ((success_count++))
+            success_count=$((success_count + 1))
         else
             print_error "Unbound failed to resolve: $domain"
         fi
@@ -187,7 +188,7 @@ test_proxy_resolution() {
         
         if [ "$status" = "SUCCESS" ]; then
             print_success "Proxy resolved: $domain (${timing}s)"
-            ((success_count++))
+            success_count=$((success_count + 1))
         else
             print_error "Proxy failed to resolve: $domain"
         fi
@@ -223,7 +224,7 @@ test_cdn_domains() {
         if [ "$status" = "SUCCESS" ]; then
             if [ "$unbound_success" = false ]; then
                 print_success "Proxy resolved via fallback: $domain (${timing}s)"
-                ((fallback_count++))
+                fallback_count=$((fallback_count + 1))
             else
                 print_success "Proxy resolved via Unbound: $domain (${timing}s)"
             fi
@@ -257,7 +258,7 @@ test_fallback_mechanism() {
         
         if [ "$status" = "SUCCESS" ]; then
             print_success "Fallback resolved: $domain (${timing}s)"
-            ((fallback_success++))
+            fallback_success=$((fallback_success + 1))
         else
             print_error "Fallback failed to resolve: $domain"
         fi
@@ -459,7 +460,7 @@ Log file size: $([ -f "/var/log/dns-fallback.log" ] && du -h "/var/log/dns-fallb
 Recent log entries: $([ -f "/var/log/dns-fallback.log" ] && tail -3 "/var/log/dns-fallback.log" | wc -l || echo "0")
 
 === Configuration ===
-Config file: $([ -f "/etc/dns-fallback/config.ini" ] && echo "Present" || echo "Missing")
+Config file: $([ -f "/opt/dns-fallback/config.ini" ] && echo "Present" || echo "Missing")
 Install directory: $([ -d "/opt/dns-fallback" ] && echo "Present" || echo "Missing")
 
 EOF
@@ -552,10 +553,12 @@ main() {
 
 # Cleanup function
 cleanup() {
-    if [ $? -ne 0 ]; then
+    local exit_code=$?
+    if [ $exit_code -ne 0 ]; then
         print_error "Testing encountered errors!"
         print_info "Check the output above for details"
     fi
+    exit $exit_code
 }
 
 # Set trap for cleanup
