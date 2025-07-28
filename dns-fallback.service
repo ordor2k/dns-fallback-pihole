@@ -5,7 +5,7 @@ After=network.target pihole-FTL.service unbound.service
 [Service]
 Type=simple
 WorkingDirectory=/opt/dns-fallback
-ExecStart=/opt/dns-fallback/venv/bin/python3 /opt/dns-fallback/dns_fallback_proxy.py
+ExecStart=/usr/bin/python3 /opt/dns-fallback/dns_fallback_proxy.py
 Restart=on-failure
 RestartSec=5s
 StandardOutput=append:/var/log/dns-fallback.log
