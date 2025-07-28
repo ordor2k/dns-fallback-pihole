@@ -804,16 +804,16 @@ update_dependencies() {
         deactivate
     else
         log "Installing dependencies globally..."
-        # Try 
-# Install flask and dnslib inside virtualenv only
-source /opt/dns-fallback/venv/bin/activate
-pip install --upgrade pip || true
-pip install flask dnslib || true
-deactivate
-                log_error "Failed to install system packages"
+        # Attempt global pip3 installation first
+        pip3 install dnslib flask --upgrade || {
+            log_warning "Global pip3 install failed, trying apt..."
+            # As a fallback, try apt if pip3 fails
+            apt update >/dev/null 2>&1 || true
+            apt install -y python3-dnslib python3-flask 2>/dev/null || {
+                log_error "Failed to install system packages via apt"
                 return 1
             }
-        fi
+        }
     fi
     
     # Verify the installation by testing imports
