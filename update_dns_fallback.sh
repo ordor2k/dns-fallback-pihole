@@ -58,7 +58,7 @@ if [ $REPLACE_CONFIG -eq 1 ]; then
     echo "config.ini replaced."
 else
     echo "NOTE: Your 'config.ini' file is NOT overwritten during update to preserve your settings."
-    echo "      To replace it, re-run with: sudo ./update_dns_fallback.sh --replace-config"
+    echo "      To replace it, re-run with: sudo bash update_dns_fallback.sh --replace-config"
     echo "      Please check 'CHANGELOG.md' for any new configuration options you might need to add manually to your 'config.ini'."
 fi
 
