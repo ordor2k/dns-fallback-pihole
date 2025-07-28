@@ -215,7 +215,7 @@ check_github_updates() {
     
     if [ "$local_commit" = "$remote_commit" ]; then
         log_success "Repository is already up to date"
-        return 0
+        return 2  # Special return code for "no updates needed"
     elif [ -z "$remote_commit" ]; then
         log_warning "Could not determine remote commit. Proceeding with pull anyway."
     else
@@ -233,6 +233,61 @@ check_github_updates() {
     
     log_success "Updates found - will pull latest changes"
     return 0
+}
+
+# Function to pull latest changes
+pull_latest_changes() {
+    log "Pulling latest changes from GitHub..."
+    
+    cd "$SCRIPT_DIR"
+    
+    # Store the current commit for comparison
+    local pre_pull_commit
+    pre_pull_commit=$(git rev-parse HEAD 2>/dev/null || echo "")
+    
+    # Perform the pull
+    if git pull origin 2>&1; then
+        local post_pull_commit
+        post_pull_commit=$(git rev-parse HEAD 2>/dev/null || echo "")
+        
+        if [ "$pre_pull_commit" != "$post_pull_commit" ]; then
+            log_success "Successfully pulled latest changes"
+            
+            # Show what was updated
+            if [ -n "$pre_pull_commit" ]; then
+                log "Changes applied:"
+                git log --oneline --no-merges "$pre_pull_commit"..HEAD 2>/dev/null | while read -r line; do
+                    log "  ✓ $line"
+                done
+                
+                # Show changed files
+                local changed_files
+                changed_files=$(git diff --name-only "$pre_pull_commit"..HEAD 2>/dev/null)
+                if [ -n "$changed_files" ]; then
+                    log "Files updated:"
+                    echo "$changed_files" | while read -r file; do
+                        log "  📝 $file"
+                    done
+                fi
+            fi
+        else
+            log_success "Repository was already up to date"
+        fi
+        
+        return 0
+    else
+        log_error "Failed to pull latest changes. Please check for conflicts or network issues."
+        
+        # Check for merge conflicts
+        if git status --porcelain | grep -q "^UU\|^AA\|^DD"; then
+            log_error "Merge conflicts detected. Please resolve manually:"
+            git status --porcelain | grep "^UU\|^AA\|^DD" | while read -r line; do
+                log "  ⚠ $line"
+            done
+        fi
+        
+        return 1
+    fi
 }
 check_connectivity() {
     log "Checking network connectivity..."
@@ -736,11 +791,17 @@ main() {
     validate_repository
     
     # Check for GitHub updates before proceeding
+    local update_check_result
     if check_github_updates; then
-        pull_latest_changes || {
-            log_error "Failed to pull latest changes. Aborting update."
-            exit 1
-        }
+        update_check_result=$?
+        if [ $update_check_result -eq 2 ]; then
+            log "No updates available, proceeding with current files"
+        else
+            pull_latest_changes || {
+                log_error "Failed to pull latest changes. Aborting update."
+                exit 1
+            }
+        fi
     else
         log_warning "Could not check for GitHub updates. Proceeding with local files."
     fi
