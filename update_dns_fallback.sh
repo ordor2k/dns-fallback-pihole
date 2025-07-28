@@ -1,8 +1,8 @@
 #!/bin/bash
 
 # DNS Fallback Pi-hole Update Script
-# Version: 2.1
-# Description: Updates DNS Fallback Pi-hole system with enhanced error handling and validation
+# Version: 2.2
+# Description: Interactive DNS Fallback Pi-hole system management with enhanced options
 
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 
@@ -11,6 +11,8 @@ RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
+CYAN='\033[0;36m'
+BOLD='\033[1m'
 NC='\033[0m' # No Color
 
 # Configuration
@@ -19,6 +21,401 @@ SYSTEMD_DIR="/etc/systemd/system"
 LOGROTATE_DIR="/etc/logrotate.d"
 LOG_DIR="/var/log/dns-fallback"
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+
+# Global variables for user selections
+SELECTED_ACTION=""
+REPLACE_CONFIG=false
+FORCE_REINSTALL=false
+UPDATE_DEPENDENCIES=true
+BACKUP_CONFIG=true
+RUN_TESTS=false
+
+# Interactive menu functions
+show_main_menu() {
+    clear
+    echo -e "${CYAN}${BOLD}================================================================${NC}"
+    echo -e "${CYAN}${BOLD}           🚀 DNS Fallback Pi-hole Management Tool            ${NC}"
+    echo -e "${CYAN}${BOLD}================================================================${NC}"
+    echo ""
+    echo -e "${BLUE}Current System Status:${NC}"
+    
+    # Quick status check
+    if systemctl is-active --quiet dns-fallback.service 2>/dev/null; then
+        echo -e "  DNS Proxy Service: ${GREEN}✓ Running${NC}"
+    else
+        echo -e "  DNS Proxy Service: ${RED}✗ Not Running${NC}"
+    fi
+    
+    if systemctl is-active --quiet dns-fallback-dashboard.service 2>/dev/null; then
+        echo -e "  Dashboard Service: ${GREEN}✓ Running${NC}"
+    else
+        echo -e "  Dashboard Service: ${RED}✗ Not Running${NC}"
+    fi
+    
+    if [ -d "$PROJECT_DIR" ]; then
+        echo -e "  Installation: ${GREEN}✓ Found${NC}"
+    else
+        echo -e "  Installation: ${RED}✗ Not Found${NC}"
+    fi
+    
+    echo ""
+    echo -e "${YELLOW}${BOLD}Please select an action:${NC}"
+    echo ""
+    echo -e "  ${BOLD}1)${NC} 🔄 ${GREEN}Standard Update${NC}"
+    echo -e "     └─ Update files, preserve config, restart services"
+    echo ""
+    echo -e "  ${BOLD}2)${NC} 🔧 ${BLUE}Quick Fix${NC}"
+    echo -e "     └─ Fix dependencies and restart services only"
+    echo ""
+    echo -e "  ${BOLD}3)${NC} 🆕 ${YELLOW}Full Reinstall${NC}"
+    echo -e "     └─ Complete reinstall with fresh configuration"
+    echo ""
+    echo -e "  ${BOLD}4)${NC} ⚙️  ${CYAN}Custom Update${NC}"
+    echo -e "     └─ Choose specific update options"
+    echo ""
+    echo -e "  ${BOLD}5)${NC} 📊 ${BLUE}System Status${NC}"
+    echo -e "     └─ View detailed system information"
+    echo ""
+    echo -e "  ${BOLD}6)${NC} 🧪 ${GREEN}Run Tests${NC}"
+    echo -e "     └─ Execute comprehensive system tests"
+    echo ""
+    echo -e "  ${BOLD}7)${NC} ❓ ${YELLOW}Help & Information${NC}"
+    echo -e "     └─ View help and documentation"
+    echo ""
+    echo -e "  ${BOLD}8)${NC} 🚪 ${RED}Exit${NC}"
+    echo ""
+    echo -e "${CYAN}================================================================${NC}"
+    echo ""
+}
+
+show_custom_options_menu() {
+    clear
+    echo -e "${CYAN}${BOLD}============================================${NC}"
+    echo -e "${CYAN}${BOLD}        🔧 Custom Update Options        ${NC}"
+    echo -e "${CYAN}${BOLD}============================================${NC}"
+    echo ""
+    echo -e "${YELLOW}Choose your update preferences:${NC}"
+    echo ""
+    
+    # Configuration options
+    echo -e "${BOLD}Configuration:${NC}"
+    if [ "$REPLACE_CONFIG" = true ]; then
+        echo -e "  ${BOLD}1)${NC} Configuration: ${YELLOW}Replace with new config${NC}"
+    else
+        echo -e "  ${BOLD}1)${NC} Configuration: ${GREEN}Preserve existing config${NC}"
+    fi
+    
+    # Dependencies options
+    echo -e "${BOLD}Dependencies:${NC}"
+    if [ "$UPDATE_DEPENDENCIES" = true ]; then
+        echo -e "  ${BOLD}2)${NC} Dependencies: ${GREEN}Update Python packages${NC}"
+    else
+        echo -e "  ${BOLD}2)${NC} Dependencies: ${YELLOW}Skip dependency updates${NC}"
+    fi
+    
+    # Backup options
+    echo -e "${BOLD}Backup:${NC}"
+    if [ "$BACKUP_CONFIG" = true ]; then
+        echo -e "  ${BOLD}3)${NC} Backup: ${GREEN}Create backup before update${NC}"
+    else
+        echo -e "  ${BOLD}3)${NC} Backup: ${YELLOW}Skip backup creation${NC}"
+    fi
+    
+    # Testing options
+    echo -e "${BOLD}Testing:${NC}"
+    if [ "$RUN_TESTS" = true ]; then
+        echo -e "  ${BOLD}4)${NC} Testing: ${GREEN}Run tests after update${NC}"
+    else
+        echo -e "  ${BOLD}4)${NC} Testing: ${YELLOW}Skip post-update tests${NC}"
+    fi
+    
+    echo ""
+    echo -e "  ${BOLD}5)${NC} 🚀 ${GREEN}Proceed with Custom Update${NC}"
+    echo -e "  ${BOLD}6)${NC} 🔙 ${BLUE}Back to Main Menu${NC}"
+    echo ""
+    echo -e "${CYAN}============================================${NC}"
+    echo ""
+}
+
+toggle_custom_option() {
+    case $1 in
+        1)
+            if [ "$REPLACE_CONFIG" = true ]; then
+                REPLACE_CONFIG=false
+                echo -e "${GREEN}✓ Will preserve existing configuration${NC}"
+            else
+                REPLACE_CONFIG=true
+                echo -e "${YELLOW}⚠ Will replace configuration with repository version${NC}"
+            fi
+            ;;
+        2)
+            if [ "$UPDATE_DEPENDENCIES" = true ]; then
+                UPDATE_DEPENDENCIES=false
+                echo -e "${YELLOW}⚠ Will skip dependency updates${NC}"
+            else
+                UPDATE_DEPENDENCIES=true
+                echo -e "${GREEN}✓ Will update Python dependencies${NC}"
+            fi
+            ;;
+        3)
+            if [ "$BACKUP_CONFIG" = true ]; then
+                BACKUP_CONFIG=false
+                echo -e "${YELLOW}⚠ Will skip backup creation${NC}"
+            else
+                BACKUP_CONFIG=true
+                echo -e "${GREEN}✓ Will create backup before update${NC}"
+            fi
+            ;;
+        4)
+            if [ "$RUN_TESTS" = true ]; then
+                RUN_TESTS=false
+                echo -e "${YELLOW}⚠ Will skip post-update tests${NC}"
+            else
+                RUN_TESTS=true
+                echo -e "${GREEN}✓ Will run comprehensive tests after update${NC}"
+            fi
+            ;;
+    esac
+    sleep 1
+}
+
+show_system_status() {
+    clear
+    echo -e "${CYAN}${BOLD}============================================${NC}"
+    echo -e "${CYAN}${BOLD}         📊 System Status Report         ${NC}"
+    echo -e "${CYAN}${BOLD}============================================${NC}"
+    echo ""
+    
+    # Service Status
+    echo -e "${BOLD}🔧 Service Status:${NC}"
+    local services=("dns-fallback.service" "dns-fallback-dashboard.service" "unbound.service" "pihole-FTL.service")
+    
+    for service in "${services[@]}"; do
+        if systemctl is-active --quiet "$service" 2>/dev/null; then
+            echo -e "  ${service}: ${GREEN}✓ Running${NC}"
+        else
+            echo -e "  ${service}: ${RED}✗ Not Running${NC}"
+        fi
+    done
+    
+    echo ""
+    
+    # Port Status
+    echo -e "${BOLD}🌐 Port Status:${NC}"
+    local ports=("5355:DNS Proxy" "5335:Unbound" "8053:Dashboard" "53:Pi-hole")
+    
+    for port_info in "${ports[@]}"; do
+        local port=$(echo "$port_info" | cut -d: -f1)
+        local name=$(echo "$port_info" | cut -d: -f2)
+        
+        if ss -tuln | grep -q ":$port "; then
+            echo -e "  Port $port ($name): ${GREEN}✓ Listening${NC}"
+        else
+            echo -e "  Port $port ($name): ${RED}✗ Not Listening${NC}"
+        fi
+    done
+    
+    echo ""
+    
+    # File System Status
+    echo -e "${BOLD}📁 Installation Status:${NC}"
+    local paths=("$PROJECT_DIR:Installation Directory" "/var/log/dns-fallback.log:Log File" "$PROJECT_DIR/config.ini:Configuration")
+    
+    for path_info in "${paths[@]}"; do
+        local path=$(echo "$path_info" | cut -d: -f1)
+        local name=$(echo "$path_info" | cut -d: -f2)
+        
+        if [ -e "$path" ]; then
+            echo -e "  $name: ${GREEN}✓ Present${NC}"
+        else
+            echo -e "  $name: ${RED}✗ Missing${NC}"
+        fi
+    done
+    
+    echo ""
+    
+    # Git Repository Status
+    echo -e "${BOLD}📋 Repository Status:${NC}"
+    if [ -d "$SCRIPT_DIR/.git" ]; then
+        cd "$SCRIPT_DIR"
+        local current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "unknown")
+        local last_commit=$(git log -1 --format="%h %s" 2>/dev/null || echo "unknown")
+        echo -e "  Current Branch: ${GREEN}$current_branch${NC}"
+        echo -e "  Last Commit: ${GREEN}$last_commit${NC}"
+        
+        # Check for updates
+        git fetch origin >/dev/null 2>&1 || true
+        local behind=$(git rev-list --count HEAD..origin/$current_branch 2>/dev/null || echo "0")
+        if [ "$behind" -gt 0 ]; then
+            echo -e "  Updates Available: ${YELLOW}$behind commits behind${NC}"
+        else
+            echo -e "  Updates: ${GREEN}✓ Up to date${NC}"
+        fi
+    else
+        echo -e "  Repository: ${RED}✗ Not a git repository${NC}"
+    fi
+    
+    echo ""
+    echo -e "${BOLD}Press Enter to return to main menu...${NC}"
+    read
+}
+
+show_help() {
+    clear
+    echo -e "${CYAN}${BOLD}============================================${NC}"
+    echo -e "${CYAN}${BOLD}          ❓ Help & Information          ${NC}"
+    echo -e "${CYAN}${BOLD}============================================${NC}"
+    echo ""
+    
+    echo -e "${BOLD}🔄 Update Types:${NC}"
+    echo ""
+    echo -e "${GREEN}Standard Update:${NC}"
+    echo "  • Updates all project files from GitHub"
+    echo "  • Preserves your existing configuration"
+    echo "  • Updates Python dependencies"
+    echo "  • Creates backup before changes"
+    echo "  • Restarts services"
+    echo ""
+    
+    echo -e "${BLUE}Quick Fix:${NC}"
+    echo "  • Fixes dependency issues only"
+    echo "  • Installs missing Python packages"
+    echo "  • Restarts services"
+    echo "  • Minimal disruption"
+    echo ""
+    
+    echo -e "${YELLOW}Full Reinstall:${NC}"
+    echo "  • Complete fresh installation"
+    echo "  • Replaces all files and configuration"
+    echo "  • Updates all dependencies"
+    echo "  • Use when system is broken"
+    echo ""
+    
+    echo -e "${CYAN}Custom Update:${NC}"
+    echo "  • Choose specific update options"
+    echo "  • Fine-grained control over process"
+    echo "  • Advanced users only"
+    echo ""
+    
+    echo -e "${BOLD}📋 Important Files:${NC}"
+    echo "  • Configuration: $PROJECT_DIR/config.ini"
+    echo "  • Logs: /var/log/dns-fallback.log"
+    echo "  • Dashboard: http://YOUR_IP:8053"
+    echo ""
+    
+    echo -e "${BOLD}🆘 Troubleshooting:${NC}"
+    echo "  • Use 'Quick Fix' for dependency issues"
+    echo "  • Use 'System Status' to diagnose problems"
+    echo "  • Check logs: journalctl -u dns-fallback.service -f"
+    echo "  • Run tests to verify functionality"
+    echo ""
+    
+    echo -e "${BOLD}Press Enter to return to main menu...${NC}"
+    read
+}
+
+get_user_selection() {
+    while true; do
+        echo -ne "${BOLD}Enter your choice (1-8): ${NC}"
+        read -r choice
+        
+        case $choice in
+            1)
+                SELECTED_ACTION="standard"
+                return 0
+                ;;
+            2)
+                SELECTED_ACTION="quick-fix"
+                return 0
+                ;;
+            3)
+                SELECTED_ACTION="reinstall"
+                REPLACE_CONFIG=true
+                FORCE_REINSTALL=true
+                return 0
+                ;;
+            4)
+                # Custom options menu
+                while true; do
+                    show_custom_options_menu
+                    echo -ne "${BOLD}Select option (1-6): ${NC}"
+                    read -r custom_choice
+                    
+                    case $custom_choice in
+                        1|2|3|4)
+                            toggle_custom_option "$custom_choice"
+                            ;;
+                        5)
+                            SELECTED_ACTION="custom"
+                            return 0
+                            ;;
+                        6)
+                            break
+                            ;;
+                        *)
+                            echo -e "${RED}Invalid choice. Please select 1-6.${NC}"
+                            sleep 1
+                            ;;
+                    esac
+                done
+                ;;
+            5)
+                show_system_status
+                ;;
+            6)
+                SELECTED_ACTION="tests"
+                return 0
+                ;;
+            7)
+                show_help
+                ;;
+            8)
+                echo -e "${GREEN}Goodbye! 👋${NC}"
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Invalid choice. Please select 1-8.${NC}"
+                sleep 1
+                ;;
+        esac
+        
+        # Redisplay menu after invalid choice or returning from submenus
+        show_main_menu
+    done
+}
+
+# Show confirmation for destructive actions
+confirm_action() {
+    echo ""
+    case $SELECTED_ACTION in
+        "reinstall")
+            echo -e "${YELLOW}${BOLD}⚠️  WARNING: Full Reinstall Selected${NC}"
+            echo -e "${YELLOW}This will replace ALL files and configuration!${NC}"
+            echo ""
+            ;;
+        "custom")
+            echo -e "${CYAN}${BOLD}📋 Custom Update Summary:${NC}"
+            [ "$REPLACE_CONFIG" = true ] && echo -e "  ${YELLOW}• Will replace configuration${NC}" || echo -e "  ${GREEN}• Will preserve configuration${NC}"
+            [ "$UPDATE_DEPENDENCIES" = true ] && echo -e "  ${GREEN}• Will update dependencies${NC}" || echo -e "  ${YELLOW}• Will skip dependencies${NC}"
+            [ "$BACKUP_CONFIG" = true ] && echo -e "  ${GREEN}• Will create backup${NC}" || echo -e "  ${YELLOW}• Will skip backup${NC}"
+            [ "$RUN_TESTS" = true ] && echo -e "  ${GREEN}• Will run tests${NC}" || echo -e "  ${YELLOW}• Will skip tests${NC}"
+            echo ""
+            ;;
+    esac
+    
+    echo -ne "${BOLD}Do you want to continue? (y/N): ${NC}"
+    read -r confirm
+    
+    case $confirm in
+        [Yy]*)
+            return 0
+            ;;
+        *)
+            echo -e "${YELLOW}Operation cancelled.${NC}"
+            exit 0
+            ;;
+    esac
+}
 
 # Quick fix for missing dependencies
 quick_fix_dependencies() {
@@ -753,53 +1150,9 @@ show_summary() {
 
 # Main execution function
 main() {
-    log "Starting DNS Fallback Pi-hole update process..."
-    
-    # Parse arguments
-    local show_help=false
-    local quick_fix=false
-    for arg in "$@"; do
-        case $arg in
-            --help|-h)
-                show_help=true
-                ;;
-            --quick-fix)
-                quick_fix=true
-                ;;
-        esac
-    done
-    
-    if [ "$show_help" = true ]; then
-        echo "DNS Fallback Pi-hole Update Script"
-        echo "Usage: sudo bash update_dns_fallback.sh [OPTIONS]"
-        echo
-        echo "Options:"
-        echo "  --replace-config    Replace existing config.ini with the one from repository"
-        echo "  --quick-fix        Apply quick fix for dependency issues"
-        echo "  --help, -h          Show this help message"
-        echo
-        echo "This script will:"
-        echo "  - Check for updates from GitHub repository"
-        echo "  - Pull latest changes if available"
-        echo "  - Update all project files from the git repository"
-        echo "  - Preserve your existing configuration (unless --replace-config is used)"
-        echo "  - Update Python dependencies"
-        echo "  - Restart all services"
-        echo "  - Create a backup of your current installation"
-        exit 0
-    fi
-    
-    # Apply quick fix if requested
-    if [ "$quick_fix" = true ]; then
-        quick_fix_dependencies
-        restart_services
-        show_summary
-        exit 0
-    fi
-    
     # Check if running as root
     if [ "$EUID" -ne 0 ]; then
-        log_error "Please run as root: sudo ./update_dns_fallback.sh"
+        echo -e "${RED}Please run as root: sudo ./update_dns_fallback.sh${NC}"
         exit 1
     fi
     
@@ -822,11 +1175,188 @@ main() {
         fi
     done
     
-    # Execute update steps
+    # Parse command line arguments (for backward compatibility)
+    if [ $# -gt 0 ]; then
+        case $1 in
+            --help|-h)
+                show_help
+                exit 0
+                ;;
+            --quick-fix)
+                SELECTED_ACTION="quick-fix"
+                ;;
+            --replace-config)
+                SELECTED_ACTION="standard"
+                REPLACE_CONFIG=true
+                ;;
+            *)
+                log_error "Unknown option: $1"
+                echo "Use --help for available options"
+                exit 1
+                ;;
+        esac
+    fi
+    
+    # Show interactive menu if no command line arguments
+    if [ -z "$SELECTED_ACTION" ]; then
+        show_main_menu
+        get_user_selection
+        confirm_action
+    fi
+    
+    # Clear screen and start update process
+    clear
+    log "Starting DNS Fallback Pi-hole update process..."
+    log "Selected action: $SELECTED_ACTION"
+    
+    # Execute based on selected action
+    case $SELECTED_ACTION in
+        "quick-fix")
+            execute_quick_fix
+            ;;
+        "standard")
+            execute_standard_update
+            ;;
+        "reinstall")
+            execute_full_reinstall
+            ;;
+        "custom")
+            execute_custom_update
+            ;;
+        "tests")
+            execute_tests_only
+            ;;
+        *)
+            log_error "Unknown action: $SELECTED_ACTION"
+            exit 1
+            ;;
+    esac
+}
+
+# Execute quick fix
+execute_quick_fix() {
+    log "Executing quick dependency fix..."
+    quick_fix_dependencies
+    restart_services
+    show_completion_summary
+}
+
+# Execute standard update
+execute_standard_update() {
+    log "Executing standard update..."
+    
     check_connectivity
     validate_repository
+    check_github_updates_and_pull
+    create_directories
     
-    # Check for GitHub updates before proceeding
+    if [ "$BACKUP_CONFIG" = true ]; then
+        backup_installation
+    fi
+    
+    stop_services
+    
+    if [ "$UPDATE_DEPENDENCIES" = true ]; then
+        update_dependencies
+    fi
+    
+    copy_files
+    handle_config
+    set_permissions
+    test_python_scripts
+    check_ports
+    restart_services
+    restart_pihole
+    
+    if [ "$RUN_TESTS" = true ]; then
+        run_post_update_tests
+    fi
+    
+    show_completion_summary
+}
+
+# Execute full reinstall
+execute_full_reinstall() {
+    log "Executing full reinstall..."
+    log_warning "This will replace ALL configuration files!"
+    
+    check_connectivity
+    validate_repository
+    check_github_updates_and_pull
+    create_directories
+    backup_installation
+    stop_services
+    
+    # Force clean installation
+    if [ -d "$PROJECT_DIR/venv" ]; then
+        log "Removing existing virtual environment..."
+        rm -rf "$PROJECT_DIR/venv"
+    fi
+    
+    update_dependencies
+    copy_files
+    
+    # Force config replacement
+    REPLACE_CONFIG=true
+    handle_config
+    
+    set_permissions
+    test_python_scripts
+    check_ports
+    restart_services
+    restart_pihole
+    run_post_update_tests
+    show_completion_summary
+}
+
+# Execute custom update
+execute_custom_update() {
+    log "Executing custom update with user preferences..."
+    
+    check_connectivity
+    validate_repository
+    check_github_updates_and_pull
+    create_directories
+    
+    if [ "$BACKUP_CONFIG" = true ]; then
+        backup_installation
+    fi
+    
+    stop_services
+    
+    if [ "$UPDATE_DEPENDENCIES" = true ]; then
+        update_dependencies
+    fi
+    
+    copy_files
+    handle_config
+    set_permissions
+    test_python_scripts
+    check_ports
+    restart_services
+    restart_pihole
+    
+    if [ "$RUN_TESTS" = true ]; then
+        run_post_update_tests
+    fi
+    
+    show_completion_summary
+}
+
+# Execute tests only
+execute_tests_only() {
+    log "Running comprehensive system tests..."
+    
+    if [ -f "test_dns_fallback.sh" ]; then
+        bash test_dns_fallback.sh
+    else
+        log_error "Test script not found!"
+        exit 1
+    fi
+}
+
+# Helper function for GitHub updates
+check_github_updates_and_pull() {
     local update_check_result
     if check_github_updates; then
         update_check_result=$?
@@ -841,20 +1371,62 @@ main() {
     else
         log_warning "Could not check for GitHub updates. Proceeding with local files."
     fi
+}
+
+# Run post-update tests
+run_post_update_tests() {
+    log "Running post-update tests..."
     
-    create_directories
-    backup_installation
-    stop_services
+    if [ -f "test_dns_fallback.sh" ]; then
+        # Run tests in background to not block the update
+        timeout 300 bash test_dns_fallback.sh || {
+            log_warning "Tests completed with warnings or timed out"
+        }
+    else
+        log_warning "Test script not found, skipping tests"
+    fi
+}
+
+# Show completion summary
+show_completion_summary() {
+    echo ""
+    log_success "DNS Fallback Pi-hole update complete! 🎉"
+    echo ""
+    log "Update Summary:"
+    log "- Action performed: $SELECTED_ACTION"
+    log "- Services updated and restarted"
     
-    update_dependencies
-    copy_files
-    handle_config "$@"
-    set_permissions
-    test_python_scripts
-    check_ports
-    restart_services
-    restart_pihole
-    show_summary
+    if [ "$REPLACE_CONFIG" = true ]; then
+        log "- Configuration replaced with repository version"
+    else
+        log "- Configuration preserved"
+    fi
+    
+    if [ "$UPDATE_DEPENDENCIES" = true ]; then
+        log "- Dependencies updated"
+    fi
+    
+    if [ -f "/tmp/dns-fallback-backup-path" ]; then
+        local backup_path
+        backup_path=$(cat /tmp/dns-fallback-backup-path)
+        log "- Backup created at: $backup_path"
+        rm -f /tmp/dns-fallback-backup-path
+    fi
+    
+    echo ""
+    log "Important reminders:"
+    log "- Check CHANGELOG.md for any new configuration options"
+    log "- Monitor logs for any issues: journalctl -u dns-fallback.service -f"
+    log "- Dashboard should be available at: http://$(hostname -I | awk '{print $1}'):8053"
+    
+    # Show current service status
+    echo ""
+    log "Current service status:"
+    systemctl status dns-fallback.service --no-pager -l | head -10 || true
+    systemctl status dns-fallback-dashboard.service --no-pager -l | head -10 || true
+    
+    echo ""
+    log_success "Update completed successfully! You can now close this terminal."
 }
 
 # Execute main function with all arguments
