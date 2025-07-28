@@ -3,20 +3,102 @@
 import os
 import subprocess
 import sys
+import shutil
 from pathlib import Path
 
-# --- Auto Virtual Environment Bootstrap ---
+# --- Enhanced Auto Virtual Environment Bootstrap ---
 VENV_DIR = Path("/opt/dns-fallback/venv")
 PYTHON_BIN = VENV_DIR / "bin" / "python3"
 PIP_BIN = VENV_DIR / "bin" / "pip"
+ACTIVATE_SCRIPT = VENV_DIR / "bin" / "activate"
 
-if not PYTHON_BIN.exists():
-    print("[INFO] Creating virtual environment...")
-    subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], check=True)
-    subprocess.run([str(PIP_BIN), "install", "--upgrade", "pip"], check=True)
-    subprocess.run([str(PIP_BIN), "install", "dnslib"], check=True)
+def is_venv_valid():
+    """Check if virtual environment is properly configured"""
+    return (PYTHON_BIN.exists() and 
+            PIP_BIN.exists() and 
+            ACTIVATE_SCRIPT.exists() and
+            PYTHON_BIN.is_file())
 
+def test_dependencies():
+    """Test if required dependencies are available in the current environment"""
+    try:
+        import dnslib
+        import flask
+        return True
+    except ImportError:
+        return False
+
+def create_or_repair_venv():
+    """Create or repair virtual environment with proper error handling"""
+    print("[INFO] Setting up virtual environment...")
+    
+    # Remove broken/incomplete venv if it exists
+    if VENV_DIR.exists() and not is_venv_valid():
+        print("[INFO] Removing incomplete virtual environment...")
+        try:
+            shutil.rmtree(VENV_DIR)
+        except Exception as e:
+            print(f"[WARNING] Failed to remove broken venv: {e}")
+            # Try to continue anyway
+    
+    # Create fresh virtual environment
+    if not VENV_DIR.exists() or not is_venv_valid():
+        print("[INFO] Creating virtual environment...")
+        try:
+            subprocess.run([sys.executable, "-m", "venv", str(VENV_DIR)], 
+                         check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Failed to create virtual environment: {e}")
+            print(f"[ERROR] stdout: {e.stdout}")
+            print(f"[ERROR] stderr: {e.stderr}")
+            sys.exit(1)
+    
+    # Verify venv was created properly
+    if not is_venv_valid():
+        print("[ERROR] Virtual environment creation failed - missing components")
+        sys.exit(1)
+    
+    # Upgrade pip first
+    print("[INFO] Upgrading pip...")
+    try:
+        subprocess.run([str(PIP_BIN), "install", "--upgrade", "pip"], 
+                     check=True, capture_output=True, text=True)
+    except subprocess.CalledProcessError as e:
+        print(f"[WARNING] Failed to upgrade pip: {e}")
+        # Continue anyway
+    
+    # Install required dependencies
+    dependencies = ["dnslib", "flask"]
+    for dep in dependencies:
+        print(f"[INFO] Installing {dep}...")
+        try:
+            subprocess.run([str(PIP_BIN), "install", "--upgrade", dep], 
+                         check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            print(f"[ERROR] Failed to install {dep}: {e}")
+            print(f"[ERROR] stdout: {e.stdout}")
+            print(f"[ERROR] stderr: {e.stderr}")
+            sys.exit(1)
+    
+    print("[INFO] Virtual environment setup complete")
+
+# Main bootstrap logic
 if sys.executable != str(PYTHON_BIN):
+    # We're not running in the target virtual environment
+    if not is_venv_valid() or not test_dependencies():
+        create_or_repair_venv()
+    
+    # Test dependencies one more time after setup
+    try:
+        result = subprocess.run([str(PYTHON_BIN), "-c", "import dnslib, flask; print('Dependencies OK')"], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode != 0:
+            print(f"[ERROR] Dependency test failed: {result.stderr}")
+            create_or_repair_venv()  # Try one more time
+    except (subprocess.TimeoutExpired, subprocess.CalledProcessError) as e:
+        print(f"[ERROR] Dependency verification failed: {e}")
+        create_or_repair_venv()
+    
     print("[INFO] Relaunching inside virtual environment...")
     os.execv(str(PYTHON_BIN), [str(PYTHON_BIN)] + sys.argv)
 
