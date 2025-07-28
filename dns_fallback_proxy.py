@@ -5,289 +5,271 @@ import sys
 import logging
 import logging.handlers
 import configparser
-from threading import Thread
-from dnslib import DNSRecord, DNSHeader, QTYPE, DNSError
+import threading
+import random
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional, Tuple, List
+import fcntl  # For PID file locking
 
-# --- Configuration File Path ---
-CONFIG_FILE = "/opt/dns-fallback/config.ini"
+from dnslib import DNSRecord, DNSHeader, QTYPE, RCODE, DNSError
 
-# --- Load Configuration ---
-config = configparser.ConfigParser()
-if not os.path.exists(CONFIG_FILE):
-    sys.exit(f"Error: Configuration file not found at {CONFIG_FILE}. Please create it and place it in /opt/dns-fallback/config.ini")
-try:
-    config.read(CONFIG_FILE)
-except Exception as e:
-    sys.exit(f"Error reading configuration file {CONFIG_FILE}: {e}")
+# --- Constants ---
+CONFIG_FILE_PATH = Path("/opt/dns-fallback/config.ini")
+DNS_STANDARD_PORT = 53
 
-# Proxy settings
-PRIMARY_DNS = config.get('Proxy', 'primary_dns', fallback="127.0.0.1")
-FALLBACK_DNS = config.get('Proxy', 'fallback_dns', fallback="1.1.1.1")
-DNS_PORT = config.getint('Proxy', 'dns_port', fallback=5353)
-HEALTH_CHECK_INTERVAL = config.getint('Proxy', 'health_check_interval', fallback=10)
-FAILURE_THRESHOLD = config.getint('Proxy', 'failure_threshold', fallback=3)
-LOG_FILE = config.get('Proxy', 'log_file', fallback="/var/log/dns-fallback.log")
-PID_FILE = config.get('Proxy', 'pid_file', fallback="/var/run/dns-fallback.pid")
-BUFFER_SIZE = config.getint('Proxy', 'buffer_size', fallback=4096)
-# --- End Load Configuration ---
+# --- Configuration & Logging Setup ---
 
-# --- Logger Setup ---
-log_dir = os.path.dirname(LOG_FILE)
-if not os.path.exists(log_dir):
+@dataclass
+class Config:
+    primary_dns: str
+    fallback_dns_servers: List[str] = field(default_factory=list)
+    listen_address: str = '127.0.0.1'
+    dns_port: int = 5355
+    health_check_interval: int = 10
+    log_file: Path = Path("/var/log/dns-fallback.log")
+    pid_file: Path = Path("/var/run/dns-fallback.pid")
+    buffer_size: int = 4096
+    max_workers: int = 50
+    health_check_domains: List[str] = field(default_factory=lambda: ["google.com", "cloudflare.com"])
+
+def setup_logging(log_file: Path) -> logging.Logger:
+    log_dir = log_file.parent
+    log_dir.mkdir(parents=True, exist_ok=True)
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    handler = logging.handlers.RotatingFileHandler(
+        log_file, maxBytes=10 * 1024 * 1024, backupCount=5
+    )
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    return logger
+
+def load_configuration(config_path: Path) -> Config:
+    if not config_path.exists():
+        sys.exit(f"Error: Config file not found at {config_path}")
+
+    config_parser = configparser.ConfigParser()
     try:
-        os.makedirs(log_dir, exist_ok=True)
-    except OSError as e:
-        sys.exit(f"Error: Could not create log directory {log_dir}: {e}")
+        config_parser.read(config_path)
+        proxy_config = config_parser['Proxy']
+        health_domains = [d.strip() for d in proxy_config.get('health_check_domains', 'google.com,cloudflare.com').split(',') if d.strip()]
+        fallback_servers = [s.strip() for s in proxy_config.get('fallback_dns_servers', '8.8.8.8,8.8.4.4').split(',') if s.strip()]
+        return Config(
+            primary_dns=proxy_config.get('primary_dns', "1.1.1.1"),
+            fallback_dns_servers=fallback_servers,
+            listen_address=proxy_config.get('listen_address', '127.0.0.1'),
+            dns_port=proxy_config.getint('dns_port', 5355),
+            health_check_interval=proxy_config.getint('health_check_interval', 10),
+            log_file=Path(proxy_config.get('log_file', "/var/log/dns-fallback.log")),
+            pid_file=Path(proxy_config.get('pid_file', "/var/run/dns-fallback.pid")),
+            buffer_size=proxy_config.getint('buffer_size', 4096),
+            max_workers=proxy_config.getint('max_workers', 50),
+            health_check_domains=health_domains
+        )
+    except (configparser.Error, KeyError, ValueError) as e:
+        sys.exit(f"Error reading or parsing config file {config_path}: {e}")
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-file_handler = logging.handlers.RotatingFileHandler(
-    LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=5
-)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-file_handler.setFormatter(formatter)
-logger.addHandler(file_handler)
-logger.info("DNS Fallback Proxy logger initialized.")
-# --- End Logger Setup ---
+class LockedPIDFile:
+    """Ensures only one process runs with this PID file, using advisory locking."""
+    def __init__(self, path: Path):
+        self.path = path
+        self.file = None
 
-class DNSServer:
-    def __init__(self, primary_dns: str, fallback_dns: str, dns_port: int,
-                 health_check_interval: int, pid_file: str, buffer_size: int,
-                 failure_threshold: int):
-        self.primary_dns = primary_dns
-        self.fallback_dns = fallback_dns
-        self.port = dns_port
-        self.pid_file = pid_file
-        self.buffer_size = buffer_size
-        self.health_check_interval = health_check_interval
-        self.failure_threshold = failure_threshold
-
-        self.current_dns = self.primary_dns
-        self.last_health_check_time = 0
-        self.consecutive_health_failures = 0
-        self.running = False
-        self.udp_sock: socket.socket | None = None
-
-        logger.info(f"DNS Fallback Proxy initialized.")
-        logger.info(f"Primary DNS: {self.primary_dns}, Fallback DNS: {self.fallback_dns}")
-        logger.info(f"Listening on port: {self.port}")
-        logger.info(f"Health check interval: {self.health_check_interval} seconds, Failure threshold: {self.failure_threshold}.")
-
-    def _create_pid_file(self):
+    def __enter__(self):
+        self.file = open(self.path, "w")
         try:
-            pid = os.getpid()
-            with open(self.pid_file, "w") as f:
-                f.write(str(pid))
-            logger.info(f"PID file created at {self.pid_file} with PID {pid}.")
-        except IOError as e:
-            logger.error(f"Error creating PID file {self.pid_file}: {e}")
-            sys.exit(1)
+            fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            sys.exit(f"Another instance is already running (PID file {self.path})")
+        self.file.write(str(os.getpid()))
+        self.file.flush()
+        return self
 
-    def _cleanup(self):
-        if os.path.exists(self.pid_file):
-            try:
-                os.remove(self.pid_file)
-                logger.info(f"Removed PID file: {self.pid_file}")
-            except OSError as e:
-                logger.error(f"Error removing PID file {self.pid_file}: {e}")
-        self.running = False
-        if self.udp_sock:
-            self.udp_sock.close()
-            logger.info("Closed main UDP server socket.")
+    def __exit__(self, exc_type, exc_value, traceback):
+        try:
+            if self.file:
+                self.file.close()
+                self.path.unlink(missing_ok=True)
+        except Exception:
+            pass
 
-    def _send_dns_query(self, dns_server: str, query_data: bytes, timeout: float = 1.0, retries: int = 3) -> bytes | None:
-        for attempt in range(retries):
-            try:
-                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                    sock.settimeout(timeout)
-                    sock.sendto(query_data, (dns_server, 53))
-                    response_data, _ = sock.recvfrom(self.buffer_size)
-                    logger.debug(f"Successfully received response from {dns_server} on attempt {attempt + 1}/{retries}.")
-                    return response_data
-            except socket.timeout:
-                logger.warning(f"DNS query to {dns_server} timed out on attempt {attempt + 1}/{retries}.")
-            except socket.gaierror as e:
-                logger.error(f"Address resolution error for {dns_server} on attempt {attempt + 1}/{retries}: {e}.")
-                return None
-            except socket.error as e:
-                logger.warning(f"Socket error during DNS query to {dns_server} on attempt {attempt + 1}/{retries}: {e}.")
-            except DNSError as e:
-                logger.warning(f"Malformed DNS response from {dns_server} on attempt {attempt + 1}/{retries}: {e}.")
-            except Exception as e:
-                logger.exception(f"An unexpected error occurred during DNS query to {dns_server} on attempt {attempt + 1}/{retries}.")
+class DNSProxy:
+    def __init__(self, config: Config, logger: logging.Logger):
+        self.config = config
+        self.logger = logger
+        self.dns_server_list = [self.config.primary_dns] + self.config.fallback_dns_servers
+        self._current_dns = self.dns_server_list[0]
+        self._state_lock = threading.Lock()
+        self._shutdown_event = threading.Event()
+        self.executor = ThreadPoolExecutor(max_workers=self.config.max_workers, thread_name_prefix='DNSHandler')
+        self.udp_sock: Optional[socket.socket] = None
+        self.tcp_sock: Optional[socket.socket] = None
+        self.logger.info(f"DNS Server Priority List: {self.dns_server_list}")
 
-            if attempt < retries - 1:
-                time.sleep(0.1 * (2 ** attempt))
+    @property
+    def current_dns(self) -> str:
+        with self._state_lock:
+            return self._current_dns
 
-        logger.error(f"DNS query to {dns_server} failed after {retries} attempts.")
+    def _send_dns_query(self, dns_server: str, query_data: bytes, timeout: float = 2.0) -> Optional[bytes]:
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.settimeout(timeout)
+                sock.sendto(query_data, (dns_server, DNS_STANDARD_PORT))
+                return sock.recvfrom(self.config.buffer_size)[0]
+        except socket.timeout:
+            self.logger.warning(f"DNS query to {dns_server} timed out.")
+        except socket.error as e:
+            self.logger.error(f"Socket error querying {dns_server}: {e}")
         return None
 
-    def _check_dns_health(self, dns_server: str) -> bool:
-        test_domains = ["google.com", "cloudflare.com", "wikipedia.org"]
-        test_query_type = QTYPE.A
-
-        for domain in test_domains:
-            try:
-                q = DNSRecord.question(domain, test_query_type)
-                query_data = q.pack()
-                response = self._send_dns_query(dns_server, query_data, timeout=0.5, retries=1)
-                if response:
-                    DNSRecord.parse(response)
-                    logger.debug(f"Health check for '{domain}' on {dns_server} succeeded.")
-                    return True
-                else:
-                    logger.debug(f"Health check for '{domain}' on {dns_server} failed (no response).")
-            except DNSError:
-                logger.warning(f"Health check for '{domain}' on {dns_server} returned malformed DNS response.")
-            except Exception as e:
-                logger.error(f"Unexpected error during health check for '{domain}' on {dns_server}: {e}")
-        logger.warning(f"All health checks to {dns_server} failed.")
-        return False
+    def _is_server_healthy(self, dns_server: str) -> bool:
+        """Health check with jitter/backoff."""
+        time.sleep(random.uniform(0, 0.25))  # Add up to 250ms jitter
+        domain_to_check = random.choice(self.config.health_check_domains)
+        try:
+            test_query = DNSRecord.question(domain_to_check, "A").pack()
+            return self._send_dns_query(dns_server, test_query, timeout=1.0) is not None
+        except Exception:
+            return False
 
     def _health_check_loop(self):
-        while self.running:
-            current_time = time.time()
-            if current_time - self.last_health_check_time >= self.health_check_interval:
-                self.last_health_check_time = current_time
-                is_primary_healthy = self._check_dns_health(self.primary_dns)
-
-                if not is_primary_healthy:
-                    self.consecutive_health_failures += 1
-                    logger.warning(f"Primary DNS ({self.primary_dns}) health check failed. Consecutive failures: {self.consecutive_health_failures}/{self.failure_threshold}.")
-                    if self.consecutive_health_failures >= self.failure_threshold and self.current_dns != self.fallback_dns:
-                        logger.warning(f"Primary DNS ({self.primary_dns}) is unhealthy after {self.failure_threshold} consecutive failures. Switching to fallback ({self.fallback_dns}).")
-                        self.current_dns = self.fallback_dns
+        self.logger.info("Health check thread started.")
+        while not self._shutdown_event.wait(self.config.health_check_interval):
+            with self._state_lock:
+                current_server = self._current_dns
+                is_primary_active = (current_server == self.dns_server_list[0])
+                if self._is_server_healthy(current_server):
+                    if not is_primary_active and self._is_server_healthy(self.dns_server_list[0]):
+                        self.logger.info(f"Primary DNS ({self.dns_server_list[0]}) is healthy again. Failing back.")
+                        self._current_dns = self.dns_server_list[0]
                 else:
-                    if self.current_dns == self.fallback_dns:
-                        logger.info(f"Primary DNS ({self.primary_dns}) is now healthy. Switching back.")
-                        self.current_dns = self.primary_dns
-                    self.consecutive_health_failures = 0
-            time.sleep(1)
+                    self.logger.warning(f"Active DNS server {current_server} has failed a health check.")
+                    for server in self.dns_server_list:
+                        if self._is_server_healthy(server):
+                            if server != current_server:
+                                self.logger.critical(f"Switching to next available server: {server}")
+                                self._current_dns = server
+                            break
+                    else:
+                        self.logger.critical("All configured DNS servers are down!")
 
-    def _handle_dns_request(self, data: bytes, client_address: tuple[str, int]):
+    def _get_servfail_response(self, original_request: DNSRecord) -> bytes:
+        header = DNSHeader(
+            id=original_request.header.id,
+            qr=1, opcode=original_request.header.opcode, rcode=RCODE.SERVFAIL
+        )
+        return DNSRecord(header, q=original_request.q).pack()
+
+    def _handle_udp_request(self, data: bytes, client_addr: Tuple[str, int]):
         try:
-            dns_query = DNSRecord.parse(data)
-            logger.debug(f"Received DNS query from {client_address}: {dns_query.q.qname} (Type: {QTYPE[dns_query.q.qtype]})")
-            response_data = self._send_dns_query(self.current_dns, data)
-            if response_data:
-                self.udp_sock.sendto(response_data, client_address)
-                logger.debug(f"Forwarded response from {self.current_dns} to {client_address}.")
-            else:
-                logger.error(f"No response from {self.current_dns} for query {dns_query.q.qname}. Not sending response to {client_address}.")
-        except DNSError as e:
-            logger.error(f"Malformed DNS query from {client_address}: {e}")
+            request = DNSRecord.parse(data)
+            query_name = request.q.qname
+            self.logger.debug(f"UDP query for '{query_name}' from {client_addr}")
+        except DNSError:
+            self.logger.warning(f"Received malformed UDP DNS query from {client_addr}")
+            return
+        response_data = self._send_dns_query(self.current_dns, data)
+        if self.udp_sock:
             try:
-                header = DNSHeader(id=0 if len(data) < 2 else data[0] << 8 | data[1], qr=1, aa=0, ra=1, rcode=2)
-                servfail_response = DNSRecord(header=header).pack()
-                self.udp_sock.sendto(servfail_response, client_address)
-            except Exception as se:
-                logger.error(f"Failed to send SERVFAIL to {client_address}: {se}")
-        except socket.error as e:
-            logger.error(f"Socket error while handling request from {client_address}: {e}")
-        except Exception as e:
-            logger.exception(f"An unexpected error occurred while handling request from {client_address}.")
+                if response_data:
+                    self.udp_sock.sendto(response_data, client_addr)
+                else:
+                    self.logger.error(f"No response from upstream for '{query_name}'. Sending SERVFAIL to {client_addr}.")
+                    servfail_response = self._get_servfail_response(request)
+                    self.udp_sock.sendto(servfail_response, client_addr)
+            except socket.error as e:
+                self.logger.error(f"Failed to send UDP response to {client_addr}: {e}")
 
-    def start_udp(self):
-        self.running = True
-        self._create_pid_file()
+    def _handle_tcp_request(self, client_sock: socket.socket, client_addr: Tuple[str, int]):
+        self.logger.debug(f"Accepted TCP connection from {client_addr}")
+        with client_sock:
+            try:
+                length_bytes = client_sock.recv(2)
+                if not length_bytes:
+                    return
+                msg_length = int.from_bytes(length_bytes, 'big')
+                data = client_sock.recv(msg_length)
+                request = DNSRecord.parse(data)
+                query_name = request.q.qname
+                self.logger.debug(f"TCP query for '{query_name}' from {client_addr}")
+                response_data = self._send_dns_query(self.current_dns, data)
+                if not response_data:
+                    self.logger.error(f"No response from upstream for '{query_name}'. Sending SERVFAIL to {client_addr}.")
+                    response_data = self._get_servfail_response(request)
+                response_with_len = len(response_data).to_bytes(2, 'big') + response_data
+                client_sock.sendall(response_with_len)
+            except DNSError:
+                self.logger.warning(f"Received malformed TCP DNS query from {client_addr}")
+            except (socket.error, ConnectionResetError) as e:
+                self.logger.warning(f"TCP connection error with {client_addr}: {e}")
+            except Exception as e:
+                self.logger.exception(f"Unexpected error handling TCP request from {client_addr}")
 
+    def _start_udp_server(self):
+        addr = (self.config.listen_address, self.config.dns_port)
+        self.logger.info(f"Starting UDP server on {addr}...")
         try:
             self.udp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.udp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.udp_sock.bind(('127.0.0.1', self.port))
-            logger.info(f"DNS Fallback Proxy UDP listening on 127.0.0.1:{self.port}...")
-
-            health_thread = Thread(target=self._health_check_loop, daemon=True)
-            health_thread.start()
-            logger.info("Health check thread started.")
-
-            while self.running:
-                try:
-                    data, client_address = self.udp_sock.recvfrom(self.buffer_size)
-                    handler_thread = Thread(target=self._handle_dns_request, args=(data, client_address), daemon=True)
-                    handler_thread.start()
-                except socket.timeout:
-                    pass
-                except OSError as e:
-                    if self.running:
-                        logger.error(f"OS Error in UDP main loop: {e}. Server may be shutting down or socket issue.")
-                        self.running = False
-                except Exception as e:
-                    logger.exception(f"Unexpected error in UDP server loop: {e}")
-                    self.running = False
-
-        except OSError as e:
-            logger.critical(f"Failed to bind UDP socket to 127.0.0.1:{self.port}: {e}. Is another process using this port? Exiting.")
-            self.running = False
-        except Exception as e:
-            logger.critical(f"DNS Fallback Proxy UDP crashed: {e}", exc_info=True)
+            self.udp_sock.bind(addr)
+            while not self._shutdown_event.is_set():
+                data, client_addr = self.udp_sock.recvfrom(self.config.buffer_size)
+                self.executor.submit(self._handle_udp_request, data, client_addr)
+        except socket.error as e:
+            if not self._shutdown_event.is_set():
+                self.logger.critical(f"UDP server socket error: {e}", exc_info=True)
+                self._shutdown_event.set()
         finally:
-            self._cleanup()
-            logger.info("DNS Fallback Proxy UDP is shutting down.")
+            self.logger.info("UDP server loop finished.")
 
-    # ------------------- TCP Support -------------------------
-    def start_tcp(self):
-        # TCP server: each client connection handled in a new thread
+    def _start_tcp_server(self):
+        addr = (self.config.listen_address, self.config.dns_port)
+        self.logger.info(f"Starting TCP server on {addr}...")
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind(('127.0.0.1', self.port))
-            sock.listen(10)
-            logger.info(f"DNS Fallback Proxy TCP listening on 127.0.0.1:{self.port}...")
+            self.tcp_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.tcp_sock.bind(addr)
+            self.tcp_sock.listen(self.config.max_workers)
+            while not self._shutdown_event.is_set():
+                client_sock, client_addr = self.tcp_sock.accept()
+                self.executor.submit(self._handle_tcp_request, client_sock, client_addr)
+        except socket.error as e:
+            if not self._shutdown_event.is_set():
+                self.logger.critical(f"TCP server socket error: {e}", exc_info=True)
+                self._shutdown_event.set()
+        finally:
+            self.logger.info("TCP server loop finished.")
 
-            while self.running:
-                try:
-                    client_sock, client_address = sock.accept()
-                    Thread(target=self._handle_tcp_request, args=(client_sock, client_address), daemon=True).start()
-                except Exception as e:
-                    logger.error(f"Error accepting TCP connection: {e}")
-        except Exception as e:
-            logger.critical(f"DNS Fallback Proxy TCP crashed: {e}", exc_info=True)
+    def run(self):
+        self.logger.info("Starting DNS Fallback Proxy...")
+        with LockedPIDFile(self.config.pid_file):
+            threading.Thread(target=self._health_check_loop, name="HealthCheckLoop", daemon=True).start()
+            threading.Thread(target=self._start_tcp_server, name="TCPServerLoop", daemon=True).start()
+            self._start_udp_server()
 
-    def _handle_tcp_request(self, client_sock, client_address):
-        try:
-            # TCP DNS: first two bytes = message length
-            length_bytes = client_sock.recv(2)
-            if not length_bytes or len(length_bytes) != 2:
-                client_sock.close()
-                return
-            msg_length = int.from_bytes(length_bytes, byteorder='big')
-            data = b''
-            while len(data) < msg_length:
-                more = client_sock.recv(msg_length - len(data))
-                if not more:
-                    client_sock.close()
-                    return
-                data += more
-            # Forward query to current active DNS server using UDP, as usual
-            response_data = self._send_dns_query(self.current_dns, data)
-            if response_data:
-                response_with_len = len(response_data).to_bytes(2, byteorder='big') + response_data
-                client_sock.sendall(response_with_len)
-            else:
-                logger.error(f"TCP: No response from {self.current_dns} for query from {client_address}.")
-            client_sock.close()
-        except Exception as e:
-            logger.error(f"Exception in TCP handler for {client_address}: {e}")
-            try:
-                client_sock.close()
-            except:
-                pass
-# ------------------- End TCP Support -------------------------
+    def shutdown(self):
+        self.logger.info("Shutting down DNS Fallback Proxy...")
+        self._shutdown_event.set()
+        self.executor.shutdown(wait=True)
+        if self.tcp_sock:
+            self.tcp_sock.close()
+        if self.udp_sock:
+            self.udp_sock.close()
+        self.logger.info("Shutdown complete.")
+
+def main():
+    config = load_configuration(CONFIG_FILE_PATH)
+    logger = setup_logging(config.log_file)
+    proxy = DNSProxy(config, logger)
+    try:
+        proxy.run()
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received.")
+    finally:
+        proxy.shutdown()
 
 if __name__ == "__main__":
-    server = DNSServer(
-        primary_dns=PRIMARY_DNS,
-        fallback_dns=FALLBACK_DNS,
-        dns_port=DNS_PORT,
-        health_check_interval=HEALTH_CHECK_INTERVAL,
-        pid_file=PID_FILE,
-        buffer_size=BUFFER_SIZE,
-        failure_threshold=FAILURE_THRESHOLD
-    )
-    # Start TCP server in background
-    tcp_thread = Thread(target=server.start_tcp, daemon=True)
-    tcp_thread.start()
-
-    # Start UDP server (main thread, blocking)
-    server.start_udp()
+    main()
