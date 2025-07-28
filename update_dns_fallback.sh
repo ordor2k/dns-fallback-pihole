@@ -804,11 +804,12 @@ update_dependencies() {
         deactivate
     else
         log "Installing dependencies globally..."
-        # Try pip3 first, fall back to apt if externally-managed-environment
-        if ! install_packages "pip3" 2>/dev/null; then
-            log_warning "pip3 install failed, trying system packages..."
-            apt update >/dev/null 2>&1 || true
-            apt install -y python3-flask python3-dnslib >/dev/null 2>&1 || {
+        # Try 
+# Install flask and dnslib inside virtualenv only
+source /opt/dns-fallback/venv/bin/activate
+pip install --upgrade pip || true
+pip install flask dnslib || true
+deactivate
                 log_error "Failed to install system packages"
                 return 1
             }
