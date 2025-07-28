@@ -39,8 +39,28 @@ else
     echo "Warning: logrotate/dns-fallback config not found, skipping."
 fi
 
-echo "NOTE: Your 'config.ini' file is NOT overwritten during update to preserve your settings."
-echo "      Please check 'CHANGELOG.md' for any new configuration options you might need to add manually to your 'config.ini'."
+# Handle config.ini update (with optional replacement)
+CONFIG_FILE="$PROJECT_DIR/config.ini"
+REPLACE_CONFIG=0
+for arg in "$@"; do
+    if [ "$arg" == "--replace-config" ]; then
+        REPLACE_CONFIG=1
+    fi
+done
+
+if [ $REPLACE_CONFIG -eq 1 ]; then
+    if [ -f "$CONFIG_FILE" ]; then
+        BACKUP_FILE="$CONFIG_FILE.backup.$(date +%Y%m%d_%H%M%S)"
+        echo "Backing up existing config.ini to $BACKUP_FILE"
+        cp "$CONFIG_FILE" "$BACKUP_FILE" || { echo "Error: Failed to backup config.ini"; exit 1; }
+    fi
+    cp config.ini "$PROJECT_DIR/" || { echo "Error: Failed to copy config.ini"; exit 1; }
+    echo "config.ini replaced."
+else
+    echo "NOTE: Your 'config.ini' file is NOT overwritten during update to preserve your settings."
+    echo "      To replace it, re-run with: sudo ./update_dns_fallback.sh --replace-config"
+    echo "      Please check 'CHANGELOG.md' for any new configuration options you might need to add manually to your 'config.ini'."
+fi
 
 echo "Setting appropriate file permissions..."
 chmod 755 "$PROJECT_DIR"/dns_fallback_proxy.py || { echo "Warning: Failed to set permissions for proxy python script."; }
