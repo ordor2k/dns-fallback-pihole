@@ -1,253 +1,1011 @@
+#!/usr/bin/env python3
+
 import os
 import sys
-import logging
-import logging.handlers
-import configparser
+from pathlib import Path
+import json
+import re
+from datetime import datetime, timedelta
+from collections import defaultdict, Counter
+from flask import Flask, render_template_string, jsonify, request, send_file
+import threading
 import time
-from datetime import datetime
-from flask import Flask, render_template_string, request, redirect, url_for
+import csv
+import io
 
-# --- Configuration File Path ---
-CONFIG_FILE = "/opt/dns-fallback/config.ini"
-
-# --- Load Configuration ---
-config = configparser.ConfigParser()
-if not os.path.exists(CONFIG_FILE):
-    # Fallback to defaults if config is missing for dashboard, but log a critical error
-    LOG_FILE_PATH = "/var/log/dns-fallback.log"
-    PID_FILE_PATH = "/var/run/dns-fallback.pid"
-    DASHBOARD_PORT = 8053
-    DASHBOARD_LOG_FILE = LOG_FILE_PATH # Default to main log file if not specified
-else:
-    try:
-        config.read(CONFIG_FILE)
-        # Dashboard settings
-        # Dashboard needs proxy's log and PID files to display status
-        LOG_FILE_PATH = config.get('Proxy', 'log_file', fallback="/var/log/dns-fallback.log")
-        PID_FILE_PATH = config.get('Proxy', 'pid_file', fallback="/var/run/dns-fallback.pid")
-        DASHBOARD_PORT = config.getint('Dashboard', 'dashboard_port', fallback=8053)
-        # Check for separate dashboard log file, default to main log file if not set
-        DASHBOARD_LOG_FILE = config.get('Dashboard', 'dashboard_log_file', fallback=LOG_FILE_PATH)
-    except Exception as e:
-        # If config parsing fails, fallback to defaults
-        LOG_FILE_PATH = "/var/log/dns-fallback.log"
-        PID_FILE_PATH = "/var/run/dns-fallback.pid"
-        DASHBOARD_PORT = 8053
-        DASHBOARD_LOG_FILE = LOG_FILE_PATH
-        sys.stderr.write(f"CRITICAL: Error reading configuration file {CONFIG_FILE} for dashboard: {e}. Using default settings.\n")
-
-# --- Logger Setup for Dashboard ---
-dashboard_log_dir = os.path.dirname(DASHBOARD_LOG_FILE)
-if not os.path.exists(dashboard_log_dir):
-    try:
-        os.makedirs(dashboard_log_dir, exist_ok=True)
-    except OSError as e:
-        sys.exit(f"Error: Could not create dashboard log directory {dashboard_log_dir}: {e}")
-
-dashboard_logger = logging.getLogger('dns_fallback_dashboard')
-dashboard_logger.setLevel(logging.INFO)
-
-file_handler_dashboard = logging.handlers.RotatingFileHandler(
-    DASHBOARD_LOG_FILE,
-    maxBytes=5 * 1024 * 1024, # Smaller dashboard log file size
-    backupCount=2
-)
-formatter_dashboard = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-file_handler_dashboard.setFormatter(formatter_dashboard)
-dashboard_logger.addHandler(file_handler_dashboard)
-
-# Console handler for dashboard (useful for Flask's output during development/testing)
-console_handler_dashboard = logging.StreamHandler(sys.stdout)
-console_handler_dashboard.setFormatter(formatter_dashboard)
-dashboard_logger.addHandler(console_handler_dashboard)
-
-dashboard_logger.info("DNS Fallback Dashboard logger initialized.")
-# --- End Logger Setup ---
+# Configuration
+LOG_FILE = "/var/log/dns-fallback.log"
+DASHBOARD_PORT = 8053
+DASHBOARD_HOST = "0.0.0.0"
 
 app = Flask(__name__)
 
-# HTML template for the dashboard
-HTML_TEMPLATE = """
+class EnhancedLogAnalyzer:
+    def __init__(self, log_file_path):
+        self.log_file_path = log_file_path
+        self.cache = {}
+        self.cache_time = None
+        self.cache_duration = 30  # seconds
+        self.lock = threading.Lock()
+
+    def _parse_structured_log(self, line):
+        """Parse structured JSON log entries"""
+        try:
+            data = json.loads(line.strip())
+            if 'domain' in data:  # DNS query log
+                return {
+                    'timestamp': datetime.fromisoformat(data['timestamp'].replace('Z', '+00:00')),
+                    'domain': data['domain'],
+                    'client': data.get('client', 'unknown'),
+                    'resolver': data.get('resolver', 'unknown'),
+                    'response_time': float(data.get('response_time', 0)),
+                    'query_type': data.get('query_type', 'A'),
+                    'success': data.get('success', True)
+                }
+        except (json.JSONDecodeError, KeyError, ValueError):
+            pass
+        return None
+
+    def _parse_legacy_log(self, line):
+        """Parse legacy text-based log entries"""
+        # Enhanced regex patterns for different log types
+        patterns = [
+            # DNS_QUERY structured logs in text format
+            (r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+).*DNS_QUERY.*domain: (\S+).*client: (\S+).*resolver: (\S+).*response_time: ([\d.]+).*query_type: (\S+).*success: (\w+)', 'dns_query'),
+            # Fallback/failure events
+            (r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+).*Switching to fallback server: (\S+)', 'fallback_switch'),
+            (r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+).*Primary DNS.*is healthy again', 'primary_restored'),
+            (r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+).*Domain (\S+) bypassed.*repeated Unbound failures', 'domain_bypassed'),
+            # Health check failures
+            (r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+).*DNS server (\S+) failed health check', 'health_failure'),
+        ]
+
+        for pattern, log_type in patterns:
+            match = re.search(pattern, line)
+            if match:
+                if log_type == 'dns_query':
+                    return {
+                        'timestamp': datetime.strptime(match.group(1), '%Y-%m-%d %H:%M:%S,%f'),
+                        'domain': match.group(2),
+                        'client': match.group(3),
+                        'resolver': match.group(4),
+                        'response_time': float(match.group(5)),
+                        'query_type': match.group(6),
+                        'success': match.group(7).lower() == 'true'
+                    }
+                elif log_type in ['fallback_switch', 'primary_restored', 'domain_bypassed', 'health_failure']:
+                    return {
+                        'timestamp': datetime.strptime(match.group(1), '%Y-%m-%d %H:%M:%S,%f'),
+                        'event_type': log_type,
+                        'details': match.group(2) if len(match.groups()) > 1 else None
+                    }
+        return None
+
+    def get_analytics(self, hours=24):
+        """Get comprehensive analytics from logs"""
+        with self.lock:
+            # Check cache validity
+            now = datetime.now()
+            if (self.cache_time and 
+                (now - self.cache_time).seconds < self.cache_duration and
+                'analytics' in self.cache):
+                return self.cache['analytics']
+
+            # Parse log file
+            cutoff_time = now - timedelta(hours=hours)
+            dns_queries = []
+            events = []
+
+            try:
+                with open(self.log_file_path, 'r') as f:
+                    for line in f:
+                        # Try structured parsing first
+                        parsed = self._parse_structured_log(line)
+                        if not parsed:
+                            parsed = self._parse_legacy_log(line)
+                        
+                        if parsed and parsed.get('timestamp', now) > cutoff_time:
+                            if 'domain' in parsed:
+                                dns_queries.append(parsed)
+                            else:
+                                events.append(parsed)
+
+            except FileNotFoundError:
+                return self._empty_analytics()
+
+            # Generate analytics
+            analytics = self._generate_analytics(dns_queries, events, hours)
+            
+            # Cache results
+            self.cache['analytics'] = analytics
+            self.cache_time = now
+            
+            return analytics
+
+    def _empty_analytics(self):
+        """Return empty analytics structure"""
+        return {
+            'summary': {
+                'total_queries': 0,
+                'unbound_queries': 0,
+                'fallback_queries': 0,
+                'bypassed_queries': 0,
+                'failed_queries': 0,
+                'unbound_success_rate': 0,
+                'fallback_usage_rate': 0,
+                'bypass_rate': 0,
+                'average_response_time': 0,
+                'unbound_avg_response': 0,
+                'fallback_avg_response': 0
+            },
+            'hourly_stats': [],
+            'top_domains': [],
+            'top_failing_domains': [],
+            'top_clients': [],
+            'resolver_distribution': {},
+            'query_types': {},
+            'recent_events': [],
+            'cdn_analysis': {
+                'total_cdn_queries': 0,
+                'cdn_unbound_success': 0,
+                'cdn_bypass_rate': 0
+            },
+            'performance_metrics': {
+                'p50_response_time': 0,
+                'p95_response_time': 0,
+                'p99_response_time': 0
+            }
+        }
+
+    def _generate_analytics(self, dns_queries, events, hours):
+        """Generate comprehensive analytics from parsed data"""
+        if not dns_queries:
+            return self._empty_analytics()
+
+        # Basic counts
+        total_queries = len(dns_queries)
+        unbound_queries = [q for q in dns_queries if q['resolver'] == 'unbound']
+        fallback_queries = [q for q in dns_queries if q['resolver'] == 'fallback']
+        bypassed_queries = [q for q in dns_queries if q['resolver'] == 'bypassed']
+        failed_queries = [q for q in dns_queries if not q['success']]
+
+        # CDN analysis
+        cdn_patterns = ['cloudfront.net', 'fastly.com', 'amazonaws.com', 'akamai.net', 'cloudflare.com']
+        cdn_queries = [q for q in dns_queries if any(pattern in q['domain'].lower() for pattern in cdn_patterns)]
+        cdn_unbound_success = [q for q in cdn_queries if q['resolver'] == 'unbound' and q['success']]
+
+        # Performance metrics
+        response_times = [q['response_time'] for q in dns_queries if q['response_time'] > 0]
+        response_times.sort()
+        
+        def percentile(data, p):
+            if not data:
+                return 0
+            k = (len(data) - 1) * p / 100
+            f = int(k)
+            c = k - f
+            if f + 1 < len(data):
+                return data[f] * (1 - c) + data[f + 1] * c
+            return data[f]
+
+        # Hourly statistics
+        hourly_stats = []
+        now = datetime.now()
+        for i in range(hours):
+            hour_start = now - timedelta(hours=i+1)
+            hour_end = now - timedelta(hours=i)
+            hour_queries = [q for q in dns_queries if hour_start <= q['timestamp'] < hour_end]
+            
+            hourly_stats.append({
+                'hour': hour_start.strftime('%H:00'),
+                'total': len(hour_queries),
+                'unbound': len([q for q in hour_queries if q['resolver'] == 'unbound']),
+                'fallback': len([q for q in hour_queries if q['resolver'] == 'fallback']),
+                'bypassed': len([q for q in hour_queries if q['resolver'] == 'bypassed']),
+                'failed': len([q for q in hour_queries if not q['success']])
+            })
+
+        # Domain analysis
+        domain_stats = defaultdict(lambda: {'total': 0, 'unbound_success': 0, 'fallback': 0, 'bypassed': 0, 'failed': 0})
+        client_stats = defaultdict(int)
+        query_type_stats = defaultdict(int)
+        resolver_stats = defaultdict(int)
+
+        for query in dns_queries:
+            domain = query['domain']
+            domain_stats[domain]['total'] += 1
+            
+            if query['resolver'] == 'unbound' and query['success']:
+                domain_stats[domain]['unbound_success'] += 1
+            elif query['resolver'] == 'fallback':
+                domain_stats[domain]['fallback'] += 1
+            elif query['resolver'] == 'bypassed':
+                domain_stats[domain]['bypassed'] += 1
+            
+            if not query['success']:
+                domain_stats[domain]['failed'] += 1
+            
+            client_stats[query['client']] += 1
+            query_type_stats[query['query_type']] += 1
+            resolver_stats[query['resolver']] += 1
+
+        # Top domains and failing domains
+        top_domains = sorted(domain_stats.items(), key=lambda x: x[1]['total'], reverse=True)[:20]
+        top_failing_domains = sorted(
+            [(d, s) for d, s in domain_stats.items() if s['failed'] > 0 or s['fallback'] > s['unbound_success']], 
+            key=lambda x: x[1]['failed'] + x[1]['fallback'], 
+            reverse=True
+        )[:15]
+
+        # Top clients
+        top_clients = sorted(client_stats.items(), key=lambda x: x[1], reverse=True)[:10]
+
+        # Recent events
+        recent_events = sorted(events, key=lambda x: x['timestamp'], reverse=True)[:20]
+
+        return {
+            'summary': {
+                'total_queries': total_queries,
+                'unbound_queries': len(unbound_queries),
+                'fallback_queries': len(fallback_queries),
+                'bypassed_queries': len(bypassed_queries),
+                'failed_queries': len(failed_queries),
+                'unbound_success_rate': (len([q for q in unbound_queries if q['success']]) / max(1, len(unbound_queries))) * 100,
+                'fallback_usage_rate': (len(fallback_queries) / max(1, total_queries)) * 100,
+                'bypass_rate': (len(bypassed_queries) / max(1, total_queries)) * 100,
+                'average_response_time': sum(q['response_time'] for q in dns_queries) / max(1, total_queries),
+                'unbound_avg_response': sum(q['response_time'] for q in unbound_queries) / max(1, len(unbound_queries)),
+                'fallback_avg_response': sum(q['response_time'] for q in fallback_queries) / max(1, len(fallback_queries))
+            },
+            'hourly_stats': list(reversed(hourly_stats)),
+            'top_domains': [(domain, stats['total']) for domain, stats in top_domains],
+            'top_failing_domains': [(domain, {'failed': stats['failed'], 'fallback': stats['fallback'], 'total': stats['total']}) for domain, stats in top_failing_domains],
+            'top_clients': top_clients,
+            'resolver_distribution': dict(resolver_stats),
+            'query_types': dict(query_type_stats),
+            'recent_events': [{'timestamp': e['timestamp'].strftime('%Y-%m-%d %H:%M:%S'), 'type': e.get('event_type', 'unknown'), 'details': e.get('details', '')} for e in recent_events],
+            'cdn_analysis': {
+                'total_cdn_queries': len(cdn_queries),
+                'cdn_unbound_success': len(cdn_unbound_success),
+                'cdn_bypass_rate': (len([q for q in cdn_queries if q['resolver'] == 'bypassed']) / max(1, len(cdn_queries))) * 100
+            },
+            'performance_metrics': {
+                'p50_response_time': percentile(response_times, 50),
+                'p95_response_time': percentile(response_times, 95),
+                'p99_response_time': percentile(response_times, 99)
+            }
+        }
+
+    def export_csv(self, hours=24):
+        """Export analytics data as CSV"""
+        analytics = self.get_analytics(hours)
+        
+        output = io.StringIO()
+        writer = csv.writer(output)
+        
+        # Write summary
+        writer.writerow(['=== SUMMARY ==='])
+        for key, value in analytics['summary'].items():
+            writer.writerow([key.replace('_', ' ').title(), f"{value:.2f}" if isinstance(value, float) else value])
+        
+        writer.writerow([])
+        writer.writerow(['=== TOP DOMAINS ==='])
+        writer.writerow(['Domain', 'Query Count'])
+        for domain, count in analytics['top_domains']:
+            writer.writerow([domain, count])
+            
+        writer.writerow([])
+        writer.writerow(['=== TOP FAILING DOMAINS ==='])
+        writer.writerow(['Domain', 'Failed Queries', 'Fallback Queries', 'Total Queries'])
+        for domain, stats in analytics['top_failing_domains']:
+            writer.writerow([domain, stats['failed'], stats['fallback'], stats['total']])
+            
+        writer.writerow([])
+        writer.writerow(['=== HOURLY STATISTICS ==='])
+        writer.writerow(['Hour', 'Total', 'Unbound', 'Fallback', 'Bypassed', 'Failed'])
+        for hour_stat in analytics['hourly_stats']:
+            writer.writerow([hour_stat['hour'], hour_stat['total'], hour_stat['unbound'], 
+                           hour_stat['fallback'], hour_stat['bypassed'], hour_stat['failed']])
+        
+        output.seek(0)
+        return output.getvalue()
+
+# Initialize log analyzer
+log_analyzer = EnhancedLogAnalyzer(LOG_FILE)
+
+# Enhanced HTML template with modern dashboard
+DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta http-equiv="refresh" content="10"> <title>DNS Fallback Pi-hole Dashboard</title>
+    <title>Enhanced DNS Fallback Dashboard</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
     <style>
-        body { font-family: 'Arial', sans-serif; margin: 20px; background-color: #f4f4f4; color: #333; }
-        .container { background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); max-width: 900px; margin: auto; }
-        h1, h2 { color: #0056b3; }
-        pre { background-color: #eee; padding: 15px; border-radius: 5px; overflow-x: auto; white-space: pre-wrap; word-wrap: break-word; max-height: 500px; }
-        .status { margin-bottom: 20px; padding: 10px; border-radius: 5px; font-weight: bold; }
-        .status.ok { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
-        .status.warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
-        .status.error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
-        .refresh-button { padding: 8px 15px; background-color: #007bff; color: white; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; display: inline-block; margin-top: 10px; }
-        .refresh-button:hover { background-color: #0056b3; }
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+        
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+        
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            background: rgba(255,255,255,0.1);
+            padding: 10px 15px;
+            border-radius: 25px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .control-group label {
+            color: white;
+            font-weight: 500;
+        }
+        
+        select, button {
+            padding: 8px 15px;
+            border: none;
+            border-radius: 20px;
+            background: white;
+            color: #333;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+        
+        button:hover {
+            background: #f0f0f0;
+            transform: translateY(-2px);
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+        
+        .stat-card {
+            background: rgba(255,255,255,0.95);
+            border-radius: 15px;
+            padding: 25px;
+            text-align: center;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.2);
+            transition: transform 0.3s ease;
+        }
+        
+        .stat-card:hover {
+            transform: translateY(-5px);
+        }
+        
+        .stat-value {
+            font-size: 2.5rem;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+        
+        .stat-label {
+            font-size: 0.9rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+        
+        .success { color: #10b981; }
+        .warning { color: #f59e0b; }
+        .danger { color: #ef4444; }
+        .info { color: #3b82f6; }
+        
+        .charts-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+            gap: 25px;
+            margin-bottom: 30px;
+        }
+        
+        .chart-container {
+            background: rgba(255,255,255,0.95);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+        
+        .chart-title {
+            font-size: 1.3rem;
+            font-weight: bold;
+            margin-bottom: 20px;
+            text-align: center;
+            color: #333;
+        }
+        
+        .tables-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(500px, 1fr));
+            gap: 25px;
+        }
+        
+        .table-container {
+            background: rgba(255,255,255,0.95);
+            border-radius: 15px;
+            padding: 25px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+        
+        .table-title {
+            font-size: 1.3rem;
+            font-weight: bold;
+            margin-bottom: 20px;
+            color: #333;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+        }
+        
+        th, td {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        
+        th {
+            background: #f9fafb;
+            font-weight: 600;
+            color: #374151;
+        }
+        
+        tbody tr:hover {
+            background: #f3f4f6;
+        }
+        
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: white;
+            font-size: 1.2rem;
+        }
+        
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        
+        .status-healthy { background: #10b981; }
+        .status-warning { background: #f59e0b; }
+        .status-error { background: #ef4444; }
+        
+        @media (max-width: 768px) {
+            .container { padding: 10px; }
+            .header h1 { font-size: 2rem; }
+            .stats-grid { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
+            .charts-grid { grid-template-columns: 1fr; }
+            .tables-grid { grid-template-columns: 1fr; }
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>DNS Fallback Pi-hole Dashboard</h1>
-
-        <p>This dashboard provides a quick overview of the DNS Fallback Proxy status.</p>
-
-        <div class="status {{ status_class }}">
-            <p><strong>Proxy Status:</strong> {{ pid_status }}</p>
-            <p><strong>Active DNS:</strong> {{ active_dns_server }}</p>
-            <p><strong>Last Status Update:</strong> {{ last_status_update }}</p>
-            <p><strong>Health Check Interval:</strong> {{ health_check_interval }} seconds</p>
-            <p><strong>Failure Threshold:</strong> {{ failure_threshold }} consecutive failures</p>
+        <div class="header">
+            <h1>🛡️ Enhanced DNS Fallback Dashboard</h1>
+            <p>Unbound + Pi-hole DNS Resolution Analytics</p>
         </div>
-
-        <a href="{{ url_for('index') }}" class="refresh-button">Refresh Now</a>
-
-        <h2>Proxy Log ({{ log_file_path }})</h2>
-        <pre>{{ log_content }}</pre>
+        
+        <div class="controls">
+            <div class="control-group">
+                <label for="timeRange">Time Range:</label>
+                <select id="timeRange">
+                    <option value="1">Last Hour</option>
+                    <option value="6">Last 6 Hours</option>
+                    <option value="24" selected>Last 24 Hours</option>
+                    <option value="168">Last Week</option>
+                </select>
+            </div>
+            <div class="control-group">
+                <button onclick="refreshData()">🔄 Refresh</button>
+                <button onclick="exportCSV()">📊 Export CSV</button>
+            </div>
+        </div>
+        
+        <div id="loading" class="loading">Loading analytics...</div>
+        <div id="dashboard" style="display: none;">
+            <!-- Summary Statistics -->
+            <div class="stats-grid" id="statsGrid"></div>
+            
+            <!-- Charts -->
+            <div class="charts-grid">
+                <div class="chart-container">
+                    <div class="chart-title">Query Distribution Over Time</div>
+                    <canvas id="hourlyChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Resolver Usage</div>
+                    <canvas id="resolverChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Response Time Distribution</div>
+                    <canvas id="performanceChart"></canvas>
+                </div>
+                <div class="chart-container">
+                    <div class="chart-title">Query Types</div>
+                    <canvas id="queryTypeChart"></canvas>
+                </div>
+            </div>
+            
+            <!-- Data Tables -->
+            <div class="tables-grid">
+                <div class="table-container">
+                    <div class="table-title">🔥 Top Domains</div>
+                    <table id="topDomainsTable"></table>
+                </div>
+                <div class="table-container">
+                    <div class="table-title">⚠️ Problematic Domains</div>
+                    <table id="failingDomainsTable"></table>
+                </div>
+                <div class="table-container">
+                    <div class="table-title">👥 Top Clients</div>
+                    <table id="topClientsTable"></table>
+                </div>
+                <div class="table-container">
+                    <div class="table-title">📋 Recent Events</div>
+                    <table id="recentEventsTable"></table>
+                </div>
+            </div>
+        </div>
     </div>
+
+    <script>
+        let currentData = null;
+        let charts = {};
+        
+        // Initialize dashboard
+        document.addEventListener('DOMContentLoaded', function() {
+            refreshData();
+            
+            // Auto-refresh every 30 seconds
+            setInterval(refreshData, 30000);
+            
+            // Time range change handler
+            document.getElementById('timeRange').addEventListener('change', refreshData);
+        });
+        
+        async function refreshData() {
+            const timeRange = document.getElementById('timeRange').value;
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('dashboard').style.display = 'none';
+            
+            try {
+                const response = await fetch(`/api/analytics?hours=${timeRange}`);
+                currentData = await response.json();
+                updateDashboard();
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                document.getElementById('loading').innerHTML = '❌ Error loading data';
+            }
+        }
+        
+        function updateDashboard() {
+            updateSummaryStats();
+            updateCharts();
+            updateTables();
+            
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('dashboard').style.display = 'block';
+        }
+        
+        function updateSummaryStats() {
+            const stats = currentData.summary;
+            const statsGrid = document.getElementById('statsGrid');
+            
+            statsGrid.innerHTML = `
+                <div class="stat-card">
+                    <div class="stat-value success">${stats.total_queries.toLocaleString()}</div>
+                    <div class="stat-label">Total Queries</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value info">${stats.unbound_success_rate.toFixed(1)}%</div>
+                    <div class="stat-label">Unbound Success Rate</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value warning">${stats.fallback_usage_rate.toFixed(1)}%</div>
+                    <div class="stat-label">Fallback Usage</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value danger">${stats.bypass_rate.toFixed(1)}%</div>
+                    <div class="stat-label">Bypass Rate</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value info">${(stats.average_response_time * 1000).toFixed(0)}ms</div>
+                    <div class="stat-label">Avg Response Time</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value success">${(stats.unbound_avg_response * 1000).toFixed(0)}ms</div>
+                    <div class="stat-label">Unbound Avg</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-value warning">${(stats.fallback_avg_response * 1000).toFixed(0)}ms</div>
+                    <div class="stat-label">Fallback Avg</div>
+                </div>
+            `;
+        }
+        
+        function updateCharts() {
+            // Destroy existing charts
+            Object.values(charts).forEach(chart => chart.destroy());
+            charts = {};
+            
+            // Hourly chart
+            const hourlyCtx = document.getElementById('hourlyChart').getContext('2d');
+            charts.hourly = new Chart(hourlyCtx, {
+                type: 'line',
+                data: {
+                    labels: currentData.hourly_stats.map(h => h.hour),
+                    datasets: [
+                        {
+                            label: 'Total Queries',
+                            data: currentData.hourly_stats.map(h => h.total),
+                            borderColor: '#3b82f6',
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Unbound Success',
+                            data: currentData.hourly_stats.map(h => h.unbound),
+                            borderColor: '#10b981',
+                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Fallback Used',
+                            data: currentData.hourly_stats.map(h => h.fallback),
+                            borderColor: '#f59e0b',
+                            backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                            tension: 0.4
+                        },
+                        {
+                            label: 'Bypassed',
+                            data: currentData.hourly_stats.map(h => h.bypassed),
+                            borderColor: '#ef4444',
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            tension: 0.4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true
+                        }
+                    }
+                }
+            });
+            
+            // Resolver distribution pie chart
+            const resolverCtx = document.getElementById('resolverChart').getContext('2d');
+            const resolverData = currentData.resolver_distribution;
+            charts.resolver = new Chart(resolverCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(resolverData),
+                    datasets: [{
+                        data: Object.values(resolverData),
+                        backgroundColor: [
+                            '#10b981',
+                            '#f59e0b',
+                            '#ef4444',
+                            '#3b82f6',
+                            '#8b5cf6'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+            
+            // Performance metrics bar chart
+            const perfCtx = document.getElementById('performanceChart').getContext('2d');
+            const perfMetrics = currentData.performance_metrics;
+            charts.performance = new Chart(perfCtx, {
+                type: 'bar',
+                data: {
+                    labels: ['P50', 'P95', 'P99'],
+                    datasets: [{
+                        label: 'Response Time (ms)',
+                        data: [
+                            perfMetrics.p50_response_time * 1000,
+                            perfMetrics.p95_response_time * 1000,
+                            perfMetrics.p99_response_time * 1000
+                        ],
+                        backgroundColor: [
+                            '#10b981',
+                            '#f59e0b',
+                            '#ef4444'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            display: false
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Response Time (ms)'
+                            }
+                        }
+                    }
+                }
+            });
+            
+            // Query types pie chart
+            const queryTypeCtx = document.getElementById('queryTypeChart').getContext('2d');
+            const queryTypeData = currentData.query_types;
+            charts.queryType = new Chart(queryTypeCtx, {
+                type: 'pie',
+                data: {
+                    labels: Object.keys(queryTypeData),
+                    datasets: [{
+                        data: Object.values(queryTypeData),
+                        backgroundColor: [
+                            '#3b82f6',
+                            '#10b981',
+                            '#f59e0b',
+                            '#ef4444',
+                            '#8b5cf6',
+                            '#06b6d4'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        legend: {
+                            position: 'bottom'
+                        }
+                    }
+                }
+            });
+        }
+        
+        function updateTables() {
+            // Top domains table
+            const topDomainsTable = document.getElementById('topDomainsTable');
+            topDomainsTable.innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Domain</th>
+                        <th>Queries</th>
+                        <th>Percentage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${currentData.top_domains.slice(0, 15).map(([domain, count]) => `
+                        <tr>
+                            <td>${domain}</td>
+                            <td>${count.toLocaleString()}</td>
+                            <td>${((count / currentData.summary.total_queries) * 100).toFixed(1)}%</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            `;
+            
+            // Failing domains table
+            const failingDomainsTable = document.getElementById('failingDomainsTable');
+            failingDomainsTable.innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Domain</th>
+                        <th>Failed</th>
+                        <th>Fallback</th>
+                        <th>Success Rate</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${currentData.top_failing_domains.slice(0, 15).map(([domain, stats]) => {
+                        const successRate = ((stats.total - stats.failed - stats.fallback) / stats.total * 100).toFixed(1);
+                        return `
+                            <tr>
+                                <td>${domain}</td>
+                                <td class="danger">${stats.failed}</td>
+                                <td class="warning">${stats.fallback}</td>
+                                <td class="${successRate > 50 ? 'success' : 'danger'}">${successRate}%</td>
+                            </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            `;
+            
+            // Top clients table
+            const topClientsTable = document.getElementById('topClientsTable');
+            topClientsTable.innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Client IP</th>
+                        <th>Queries</th>
+                        <th>Percentage</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${currentData.top_clients.slice(0, 10).map(([client, count]) => `
+                        <tr>
+                            <td>${client}</td>
+                            <td>${count.toLocaleString()}</td>
+                            <td>${((count / currentData.summary.total_queries) * 100).toFixed(1)}%</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            `;
+            
+            // Recent events table
+            const recentEventsTable = document.getElementById('recentEventsTable');
+            recentEventsTable.innerHTML = `
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Event</th>
+                        <th>Details</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${currentData.recent_events.slice(0, 20).map(event => {
+                        const eventClass = event.type.includes('fail') ? 'danger' : 
+                                         event.type.includes('bypass') ? 'warning' : 'info';
+                        return `
+                            <tr>
+                                <td>${event.timestamp}</td>
+                                <td><span class="status-indicator status-${eventClass === 'danger' ? 'error' : eventClass === 'warning' ? 'warning' : 'healthy'}"></span>${event.type}</td>
+                                <td>${event.details || '-'}</td>
+                            </tr>
+                        `;
+                    }).join('')}
+                </tbody>
+            `;
+        }
+        
+        async function exportCSV() {
+            const timeRange = document.getElementById('timeRange').value;
+            try {
+                const response = await fetch(`/api/export?hours=${timeRange}`);
+                const blob = await response.blob();
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `dns-fallback-analytics-${new Date().toISOString().split('T')[0]}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+            } catch (error) {
+                console.error('Error exporting CSV:', error);
+                alert('Error exporting CSV data');
+            }
+        }
+    </script>
 </body>
 </html>
 """
 
 @app.route('/')
-def index():
-    """
-    Renders the main dashboard page, displaying proxy status and logs.
-    """
-    dashboard_logger.info(f"Dashboard accessed by {request.remote_addr}.")
+def dashboard():
+    return render_template_string(DASHBOARD_HTML)
 
-    log_content = "Log file not found or inaccessible."
-    pid_status = "PID file not found. Proxy may not be running."
-    active_dns_server = "Unknown"
-    last_status_update = "N/A"
-    status_class = "error" # Default status
+@app.route('/api/analytics')
+def api_analytics():
+    hours = int(request.args.get('hours', 24))
+    analytics = log_analyzer.get_analytics(hours)
+    return jsonify(analytics)
 
-    # Get configuration values for display
-    primary_dns = config.get('Proxy', 'primary_dns', fallback='N/A')
-    fallback_dns = config.get('Proxy', 'fallback_dns', fallback='N/A')
-    health_check_interval = config.get('Proxy', 'health_check_interval', fallback='N/A')
-    failure_threshold = config.get('Proxy', 'failure_threshold', fallback='N/A')
-
-    # Read log file content
-    try:
-        if os.path.exists(LOG_FILE_PATH):
-            with open(LOG_FILE_PATH, 'r') as f:
-                log_content = f.read()
-            # Attempt to determine status from log content
-            if log_content:
-                latest_switch_to_primary = None
-                latest_switch_to_fallback = None
-                proxy_started = False
-                
-                # Iterate lines in reverse for efficiency
-                for line in reversed(log_content.splitlines()):
-                    if "DNS Fallback Proxy listening on" in line:
-                        proxy_started = True
-                    if "Primary DNS is now healthy. Switching back." in line:
-                        latest_switch_to_primary = line
-                        break # Found the most recent switch to primary
-                    elif "Primary DNS is unhealthy" in line and "Switching to fallback" in line:
-                        latest_switch_to_fallback = line
-                        break # Found the most recent switch to fallback
-                
-                if latest_switch_to_primary:
-                    active_dns_server = f"Primary ({primary_dns})"
-                    status_class = "ok"
-                    try:
-                        # Extract timestamp from log line: YYYY-MM-DD HH:MM:SS,ms - LEVEL - Message
-                        timestamp_str = latest_switch_to_primary.split(' - ')[0]
-                        dt_object = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S,%f')
-                        last_status_update = dt_object.strftime('%Y-%m-%d %H:%M:%S')
-                    except ValueError:
-                        pass # Fallback to N/A if parsing fails
-
-                elif latest_switch_to_fallback:
-                    active_dns_server = f"Fallback ({fallback_dns})"
-                    status_class = "warning"
-                    try:
-                        timestamp_str = latest_switch_to_fallback.split(' - ')[0]
-                        dt_object = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S,%f')
-                        last_status_update = dt_object.strftime('%Y-%m-%d %H:%M:%S')
-                    except ValueError:
-                        pass
-
-                elif proxy_started:
-                    # If proxy started but no switch events, assume primary is active
-                    active_dns_server = f"Primary ({primary_dns}) (default)"
-                    status_class = "ok"
-                    # Try to find the start time from logs
-                    for line in log_content.splitlines():
-                        if "DNS Fallback Proxy listening on" in line:
-                            try:
-                                timestamp_str = line.split(' - ')[0]
-                                dt_object = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S,%f')
-                                last_status_update = dt_object.strftime('%Y-%m-%d %H:%M:%S')
-                                break
-                            except ValueError:
-                                pass
-                else:
-                    active_dns_server = "Unknown (Proxy might not have started successfully)"
-                    status_class = "error"
-            else:
-                log_content = "Log file is empty."
-                active_dns_server = "Unknown (Log file empty)"
-                status_class = "warning"
-
-        else:
-            dashboard_logger.warning(f"Log file not found at {LOG_FILE_PATH}.")
-            log_content = "Log file not found. Ensure proxy is running and configured correctly."
-            active_dns_server = "Unknown (Log file missing)"
-
-    except FileNotFoundError:
-        dashboard_logger.error(f"Log file path incorrect or file does not exist: {LOG_FILE_PATH}")
-        log_content = f"Log file not found at '{LOG_FILE_PATH}'. Check configuration."
-    except IOError as e:
-        dashboard_logger.error(f"Error reading log file {LOG_FILE_PATH}: {e}")
-        log_content = f"Error reading log file: {e}"
-    except Exception as e:
-        dashboard_logger.exception("An unexpected error occurred while processing log file.")
-        log_content = f"An unexpected error occurred reading logs: {e}"
-
-
-    # Check PID file status
-    try:
-        if os.path.exists(PID_FILE_PATH):
-            with open(PID_FILE_PATH, 'r') as f:
-                pid = f.read().strip()
-                pid_status = f"Proxy running with PID: {pid}"
-                # If active_dns_server is still 'Unknown', assume running and healthy.
-                if active_dns_server.startswith("Unknown"):
-                    active_dns_server = f"Primary ({primary_dns}) (assumed)"
-                    status_class = "ok"
-                dashboard_logger.info(f"PID file found: {PID_FILE_PATH}.")
-        else:
-            pid_status = "PID file not found. Proxy may not be running or path is incorrect."
-            status_class = "error" # If PID file not found, proxy is likely not running.
-            dashboard_logger.warning(f"PID file not found at {PID_FILE_PATH}.")
-    except FileNotFoundError:
-        dashboard_logger.error(f"PID file path incorrect or file does not exist: {PID_FILE_PATH}")
-        pid_status = f"PID file not found at '{PID_FILE_PATH}'. Check configuration."
-    except IOError as e:
-        dashboard_logger.error(f"Error reading PID file {PID_FILE_PATH}: {e}")
-        pid_status = f"Error reading PID file: {e}"
-    except Exception as e:
-        dashboard_logger.exception("An unexpected error occurred while processing PID file.")
-        pid_status = f"An unexpected error occurred reading PID file: {e}"
-
-
-    return render_template_string(
-        HTML_TEMPLATE,
-        log_content=log_content,
-        log_file_path=LOG_FILE_PATH,
-        pid_status=pid_status,
-        active_dns_server=active_dns_server,
-        last_status_update=last_status_update,
-        status_class=status_class,
-        health_check_interval=health_check_interval,
-        failure_threshold=failure_threshold
+@app.route('/api/export')
+def api_export():
+    hours = int(request.args.get('hours', 24))
+    csv_data = log_analyzer.export_csv(hours)
+    
+    output = io.StringIO(csv_data)
+    output.seek(0)
+    
+    return send_file(
+        io.BytesIO(output.getvalue().encode('utf-8')),
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name=f'dns-fallback-analytics-{datetime.now().strftime("%Y%m%d")}.csv'
     )
 
+@app.route('/health')
+def health_check():
+    """Health check endpoint for monitoring"""
+    try:
+        # Quick log file check
+        if os.path.exists(LOG_FILE):
+            file_size = os.path.getsize(LOG_FILE)
+            return jsonify({
+                'status': 'healthy',
+                'log_file_size': file_size,
+                'timestamp': datetime.now().isoformat()
+            })
+        else:
+            return jsonify({
+                'status': 'warning',
+                'message': 'Log file not found',
+                'timestamp': datetime.now().isoformat()
+            }), 200
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
 if __name__ == '__main__':
-    dashboard_logger.info(f"DNS Fallback Dashboard running on http://0.0.0.0:{DASHBOARD_PORT}")
-    app.run(host='0.0.0.0', port=DASHBOARD_PORT, debug=False) # debug=False for production
+    print(f"🚀 Enhanced DNS Fallback Dashboard starting on http://{DASHBOARD_HOST}:{DASHBOARD_PORT}")
+    print(f"📊 Monitoring log file: {LOG_FILE}")
+    print(f"🔍 Health check: http://{DASHBOARD_HOST}:{DASHBOARD_PORT}/health")
+    
+    app.run(
+        host=DASHBOARD_HOST,
+        port=DASHBOARD_PORT,
+        debug=False,
+        threaded=True
+    )
