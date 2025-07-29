@@ -313,7 +313,7 @@ class EnhancedLogAnalyzer:
 # Initialize log analyzer
 log_analyzer = EnhancedLogAnalyzer(LOG_FILE)
 
-# Enhanced HTML template with modern dashboard
+# Enhanced HTML template with seamless updates
 DASHBOARD_HTML = """
 <!DOCTYPE html>
 <html lang="en">
@@ -398,6 +398,10 @@ DASHBOARD_HTML = """
             transform: translateY(-2px);
         }
         
+        button:active {
+            transform: translateY(0);
+        }
+        
         .stats-grid {
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
@@ -413,7 +417,25 @@ DASHBOARD_HTML = """
             box-shadow: 0 8px 32px rgba(0,0,0,0.1);
             backdrop-filter: blur(10px);
             border: 1px solid rgba(255,255,255,0.2);
-            transition: transform 0.3s ease;
+            transition: transform 0.3s ease, opacity 0.3s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .stat-card.updating::after {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+            animation: shimmer 1s ease-in-out;
+        }
+        
+        @keyframes shimmer {
+            0% { left: -100%; }
+            100% { left: 100%; }
         }
         
         .stat-card:hover {
@@ -424,6 +446,7 @@ DASHBOARD_HTML = """
             font-size: 2.5rem;
             font-weight: bold;
             margin-bottom: 10px;
+            transition: all 0.5s ease;
         }
         
         .stat-label {
@@ -450,6 +473,11 @@ DASHBOARD_HTML = """
             border-radius: 15px;
             padding: 25px;
             box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            transition: opacity 0.3s ease;
+        }
+        
+        .chart-container.updating {
+            opacity: 0.7;
         }
         
         .chart-title {
@@ -471,6 +499,11 @@ DASHBOARD_HTML = """
             border-radius: 15px;
             padding: 25px;
             box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+            transition: opacity 0.3s ease;
+        }
+        
+        .table-container.updating {
+            opacity: 0.7;
         }
         
         .table-title {
@@ -498,8 +531,27 @@ DASHBOARD_HTML = """
             color: #374151;
         }
         
+        tbody tr {
+            transition: background-color 0.2s ease;
+        }
+        
         tbody tr:hover {
             background: #f3f4f6;
+        }
+        
+        tbody tr.new-row {
+            animation: fadeIn 0.5s ease;
+        }
+        
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
         
         .loading {
@@ -515,11 +567,62 @@ DASHBOARD_HTML = """
             height: 12px;
             border-radius: 50%;
             margin-right: 8px;
+            animation: pulse 2s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
         }
         
         .status-healthy { background: #10b981; }
         .status-warning { background: #f59e0b; }
         .status-error { background: #ef4444; }
+        
+        .update-indicator {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(255,255,255,0.95);
+            padding: 10px 20px;
+            border-radius: 25px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.15);
+            display: none;
+            align-items: center;
+            gap: 10px;
+            z-index: 1000;
+        }
+        
+        .update-indicator.show {
+            display: flex;
+            animation: slideIn 0.3s ease;
+        }
+        
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        
+        .spinner {
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f4f6;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
         
         @media (max-width: 768px) {
             .container { padding: 10px; }
@@ -527,6 +630,7 @@ DASHBOARD_HTML = """
             .stats-grid { grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); }
             .charts-grid { grid-template-columns: 1fr; }
             .tables-grid { grid-template-columns: 1fr; }
+            .update-indicator { top: 10px; right: 10px; }
         }
     </style>
 </head>
@@ -548,7 +652,7 @@ DASHBOARD_HTML = """
                 </select>
             </div>
             <div class="control-group">
-                <button onclick="refreshData()">🔄 Refresh</button>
+                <button onclick="refreshData(true)">🔄 Refresh</button>
                 <button onclick="exportCSV()">📊 Export CSV</button>
             </div>
         </div>
@@ -560,19 +664,19 @@ DASHBOARD_HTML = """
             
             <!-- Charts -->
             <div class="charts-grid">
-                <div class="chart-container">
+                <div class="chart-container" id="hourlyChartContainer">
                     <div class="chart-title">Query Distribution Over Time</div>
                     <canvas id="hourlyChart"></canvas>
                 </div>
-                <div class="chart-container">
+                <div class="chart-container" id="resolverChartContainer">
                     <div class="chart-title">Resolver Usage</div>
                     <canvas id="resolverChart"></canvas>
                 </div>
-                <div class="chart-container">
+                <div class="chart-container" id="performanceChartContainer">
                     <div class="chart-title">Response Time Distribution</div>
                     <canvas id="performanceChart"></canvas>
                 </div>
-                <div class="chart-container">
+                <div class="chart-container" id="queryTypeChartContainer">
                     <div class="chart-title">Query Types</div>
                     <canvas id="queryTypeChart"></canvas>
                 </div>
@@ -580,260 +684,410 @@ DASHBOARD_HTML = """
             
             <!-- Data Tables -->
             <div class="tables-grid">
-                <div class="table-container">
+                <div class="table-container" id="topDomainsContainer">
                     <div class="table-title">🔥 Top Domains</div>
                     <table id="topDomainsTable"></table>
                 </div>
-                <div class="table-container">
+                <div class="table-container" id="failingDomainsContainer">
                     <div class="table-title">⚠️ Problematic Domains</div>
                     <table id="failingDomainsTable"></table>
                 </div>
-                <div class="table-container">
+                <div class="table-container" id="topClientsContainer">
                     <div class="table-title">👥 Top Clients</div>
                     <table id="topClientsTable"></table>
                 </div>
-                <div class="table-container">
+                <div class="table-container" id="recentEventsContainer">
                     <div class="table-title">📋 Recent Events</div>
                     <table id="recentEventsTable"></table>
                 </div>
             </div>
         </div>
     </div>
+    
+    <!-- Update indicator -->
+    <div class="update-indicator" id="updateIndicator">
+        <div class="spinner"></div>
+        <span>Updating dashboard...</span>
+    </div>
 
     <script>
         let currentData = null;
+        let previousData = null;
         let charts = {};
+        let isUpdating = false;
+        let autoRefreshInterval = null;
         
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
-            refreshData();
+            refreshData(true);
             
             // Auto-refresh every 30 seconds
-            setInterval(refreshData, 30000);
+            autoRefreshInterval = setInterval(() => refreshData(false), 30000);
             
             // Time range change handler
-            document.getElementById('timeRange').addEventListener('change', refreshData);
+            document.getElementById('timeRange').addEventListener('change', () => refreshData(true));
         });
         
-        async function refreshData() {
+        async function refreshData(showLoading = false) {
+            if (isUpdating) return;
+            isUpdating = true;
+            
             const timeRange = document.getElementById('timeRange').value;
-            document.getElementById('loading').style.display = 'block';
-            document.getElementById('dashboard').style.display = 'none';
+            
+            if (showLoading) {
+                document.getElementById('loading').style.display = 'block';
+                document.getElementById('dashboard').style.display = 'none';
+            } else {
+                // Show update indicator
+                document.getElementById('updateIndicator').classList.add('show');
+            }
             
             try {
                 const response = await fetch(`/api/analytics?hours=${timeRange}`);
-                currentData = await response.json();
-                updateDashboard();
+                const newData = await response.json();
+                
+                previousData = currentData;
+                currentData = newData;
+                
+                if (showLoading || !previousData) {
+                    // Initial load or time range change
+                    updateDashboard(true);
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('dashboard').style.display = 'block';
+                } else {
+                    // Seamless update
+                    updateDashboard(false);
+                }
             } catch (error) {
                 console.error('Error fetching data:', error);
-                document.getElementById('loading').innerHTML = '❌ Error loading data';
+                if (showLoading) {
+                    document.getElementById('loading').innerHTML = '❌ Error loading data';
+                }
+            } finally {
+                isUpdating = false;
+                // Hide update indicator
+                setTimeout(() => {
+                    document.getElementById('updateIndicator').classList.remove('show');
+                }, 500);
             }
         }
         
-        function updateDashboard() {
-            updateSummaryStats();
-            updateCharts();
-            updateTables();
-            
-            document.getElementById('loading').style.display = 'none';
-            document.getElementById('dashboard').style.display = 'block';
+        function updateDashboard(fullUpdate = true) {
+            updateSummaryStats(fullUpdate);
+            updateCharts(fullUpdate);
+            updateTables(fullUpdate);
         }
         
-        function updateSummaryStats() {
+        function animateValue(element, start, end, duration) {
+            const range = end - start;
+            const startTime = performance.now();
+            
+            function update(currentTime) {
+                const elapsed = currentTime - startTime;
+                const progress = Math.min(elapsed / duration, 1);
+                const current = start + (range * progress);
+                
+                if (element.dataset.isPercentage === 'true') {
+                    element.textContent = current.toFixed(1) + '%';
+                } else if (element.dataset.isTime === 'true') {
+                    element.textContent = current.toFixed(0) + 'ms';
+                } else {
+                    element.textContent = Math.round(current).toLocaleString();
+                }
+                
+                if (progress < 1) {
+                    requestAnimationFrame(update);
+                }
+            }
+            
+            requestAnimationFrame(update);
+        }
+        
+        function updateSummaryStats(fullUpdate = true) {
             const stats = currentData.summary;
             const statsGrid = document.getElementById('statsGrid');
             
-            statsGrid.innerHTML = `
-                <div class="stat-card">
-                    <div class="stat-value success">${stats.total_queries.toLocaleString()}</div>
-                    <div class="stat-label">Total Queries</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value info">${stats.unbound_success_rate.toFixed(1)}%</div>
-                    <div class="stat-label">Unbound Success Rate</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value warning">${stats.fallback_usage_rate.toFixed(1)}%</div>
-                    <div class="stat-label">Fallback Usage</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value danger">${stats.bypass_rate.toFixed(1)}%</div>
-                    <div class="stat-label">Bypass Rate</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value info">${(stats.average_response_time * 1000).toFixed(0)}ms</div>
-                    <div class="stat-label">Avg Response Time</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value success">${(stats.unbound_avg_response * 1000).toFixed(0)}ms</div>
-                    <div class="stat-label">Unbound Avg</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value warning">${(stats.fallback_avg_response * 1000).toFixed(0)}ms</div>
-                    <div class="stat-label">Fallback Avg</div>
-                </div>
-            `;
+            const statsConfig = [
+                { value: stats.total_queries, label: 'Total Queries', class: 'success' },
+                { value: stats.unbound_success_rate, label: 'Unbound Success Rate', class: 'info', isPercentage: true },
+                { value: stats.fallback_usage_rate, label: 'Fallback Usage', class: 'warning', isPercentage: true },
+                { value: stats.bypass_rate, label: 'Bypass Rate', class: 'danger', isPercentage: true },
+                { value: stats.average_response_time * 1000, label: 'Avg Response Time', class: 'info', isTime: true },
+                { value: stats.unbound_avg_response * 1000, label: 'Unbound Avg', class: 'success', isTime: true },
+                { value: stats.fallback_avg_response * 1000, label: 'Fallback Avg', class: 'warning', isTime: true }
+            ];
+            
+            if (fullUpdate) {
+                statsGrid.innerHTML = statsConfig.map((stat, index) => `
+                    <div class="stat-card" id="stat-${index}">
+                        <div class="stat-value ${stat.class}" 
+                             data-value="${stat.value}"
+                             data-is-percentage="${stat.isPercentage || false}"
+                             data-is-time="${stat.isTime || false}">
+                            ${stat.isPercentage ? stat.value.toFixed(1) + '%' : 
+                              stat.isTime ? stat.value.toFixed(0) + 'ms' :
+                              stat.value.toLocaleString()}
+                        </div>
+                        <div class="stat-label">${stat.label}</div>
+                    </div>
+                `).join('');
+            } else {
+                // Animate value changes
+                statsConfig.forEach((stat, index) => {
+                    const card = document.getElementById(`stat-${index}`);
+                    const valueElement = card.querySelector('.stat-value');
+                    const oldValue = parseFloat(valueElement.dataset.value) || 0;
+                    
+                    if (Math.abs(oldValue - stat.value) > 0.01) {
+                        card.classList.add('updating');
+                        animateValue(valueElement, oldValue, stat.value, 500);
+                        valueElement.dataset.value = stat.value;
+                        
+                        setTimeout(() => {
+                            card.classList.remove('updating');
+                        }, 600);
+                    }
+                });
+            }
         }
         
-        function updateCharts() {
-            // Destroy existing charts
-            Object.values(charts).forEach(chart => chart.destroy());
-            charts = {};
+        function updateCharts(fullUpdate = true) {
+            if (fullUpdate) {
+                // Destroy existing charts
+                Object.values(charts).forEach(chart => chart.destroy());
+                charts = {};
+            }
             
-            // Hourly chart
-            const hourlyCtx = document.getElementById('hourlyChart').getContext('2d');
-            charts.hourly = new Chart(hourlyCtx, {
-                type: 'line',
-                data: {
-                    labels: currentData.hourly_stats.map(h => h.hour),
-                    datasets: [
-                        {
-                            label: 'Total Queries',
-                            data: currentData.hourly_stats.map(h => h.total),
-                            borderColor: '#3b82f6',
-                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
-                            tension: 0.4
-                        },
-                        {
-                            label: 'Unbound Success',
-                            data: currentData.hourly_stats.map(h => h.unbound),
-                            borderColor: '#10b981',
-                            backgroundColor: 'rgba(16, 185, 129, 0.1)',
-                            tension: 0.4
-                        },
-                        {
-                            label: 'Fallback Used',
-                            data: currentData.hourly_stats.map(h => h.fallback),
-                            borderColor: '#f59e0b',
-                            backgroundColor: 'rgba(245, 158, 11, 0.1)',
-                            tension: 0.4
-                        },
-                        {
-                            label: 'Bypassed',
-                            data: currentData.hourly_stats.map(h => h.bypassed),
-                            borderColor: '#ef4444',
-                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
-                            tension: 0.4
-                        }
-                    ]
-                },
-                options: {
-                    responsive: true,
-                    plugins: {
-                        legend: {
-                            position: 'bottom'
-                        }
+            // Update or create hourly chart
+            updateHourlyChart(fullUpdate);
+            updateResolverChart(fullUpdate);
+            updatePerformanceChart(fullUpdate);
+            updateQueryTypeChart(fullUpdate);
+        }
+        
+        function updateHourlyChart(fullUpdate) {
+            const container = document.getElementById('hourlyChartContainer');
+            const ctx = document.getElementById('hourlyChart').getContext('2d');
+            
+            const chartData = {
+                labels: currentData.hourly_stats.map(h => h.hour),
+                datasets: [
+                    {
+                        label: 'Total Queries',
+                        data: currentData.hourly_stats.map(h => h.total),
+                        borderColor: '#3b82f6',
+                        backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                        tension: 0.4
                     },
-                    scales: {
-                        y: {
-                            beginAtZero: true
-                        }
-                    }
-                }
-            });
-            
-            // Resolver distribution pie chart
-            const resolverCtx = document.getElementById('resolverChart').getContext('2d');
-            const resolverData = currentData.resolver_distribution;
-            charts.resolver = new Chart(resolverCtx, {
-                type: 'doughnut',
-                data: {
-                    labels: Object.keys(resolverData),
-                    datasets: [{
-                        data: Object.values(resolverData),
-                        backgroundColor: [
-                            '#10b981',
-                            '#f59e0b',
-                            '#ef4444',
-                            '#3b82f6',
-                            '#8b5cf6'
-                        ]
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: {
-                        legend: {
-                            position: 'bottom'
-                        }
-                    }
-                }
-            });
-            
-            // Performance metrics bar chart
-            const perfCtx = document.getElementById('performanceChart').getContext('2d');
-            const perfMetrics = currentData.performance_metrics;
-            charts.performance = new Chart(perfCtx, {
-                type: 'bar',
-                data: {
-                    labels: ['P50', 'P95', 'P99'],
-                    datasets: [{
-                        label: 'Response Time (ms)',
-                        data: [
-                            perfMetrics.p50_response_time * 1000,
-                            perfMetrics.p95_response_time * 1000,
-                            perfMetrics.p99_response_time * 1000
-                        ],
-                        backgroundColor: [
-                            '#10b981',
-                            '#f59e0b',
-                            '#ef4444'
-                        ]
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: {
-                        legend: {
-                            display: false
-                        }
+                    {
+                        label: 'Unbound Success',
+                        data: currentData.hourly_stats.map(h => h.unbound),
+                        borderColor: '#10b981',
+                        backgroundColor: 'rgba(16, 185, 129, 0.1)',
+                        tension: 0.4
                     },
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            title: {
-                                display: true,
-                                text: 'Response Time (ms)'
+                    {
+                        label: 'Fallback Used',
+                        data: currentData.hourly_stats.map(h => h.fallback),
+                        borderColor: '#f59e0b',
+                        backgroundColor: 'rgba(245, 158, 11, 0.1)',
+                        tension: 0.4
+                    },
+                    {
+                        label: 'Bypassed',
+                        data: currentData.hourly_stats.map(h => h.bypassed),
+                        borderColor: '#ef4444',
+                        backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                        tension: 0.4
+                    }
+                ]
+            };
+            
+            if (fullUpdate || !charts.hourly) {
+                charts.hourly = new Chart(ctx, {
+                    type: 'line',
+                    data: chartData,
+                    options: {
+                        responsive: true,
+                        animation: {
+                            duration: fullUpdate ? 1000 : 0
+                        },
+                        plugins: {
+                            legend: {
+                                position: 'bottom'
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true
                             }
                         }
                     }
-                }
-            });
-            
-            // Query types pie chart
-            const queryTypeCtx = document.getElementById('queryTypeChart').getContext('2d');
-            const queryTypeData = currentData.query_types;
-            charts.queryType = new Chart(queryTypeCtx, {
-                type: 'pie',
-                data: {
-                    labels: Object.keys(queryTypeData),
-                    datasets: [{
-                        data: Object.values(queryTypeData),
-                        backgroundColor: [
-                            '#3b82f6',
-                            '#10b981',
-                            '#f59e0b',
-                            '#ef4444',
-                            '#8b5cf6',
-                            '#06b6d4'
-                        ]
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    plugins: {
-                        legend: {
-                            position: 'bottom'
-                        }
-                    }
-                }
-            });
+                });
+            } else {
+                container.classList.add('updating');
+                charts.hourly.data = chartData;
+                charts.hourly.update('none');
+                setTimeout(() => container.classList.remove('updating'), 300);
+            }
         }
         
-        function updateTables() {
-            // Top domains table
-            const topDomainsTable = document.getElementById('topDomainsTable');
-            topDomainsTable.innerHTML = `
+        function updateResolverChart(fullUpdate) {
+            const container = document.getElementById('resolverChartContainer');
+            const ctx = document.getElementById('resolverChart').getContext('2d');
+            const resolverData = currentData.resolver_distribution;
+            
+            const chartData = {
+                labels: Object.keys(resolverData),
+                datasets: [{
+                    data: Object.values(resolverData),
+                    backgroundColor: [
+                        '#10b981',
+                        '#f59e0b',
+                        '#ef4444',
+                        '#3b82f6',
+                        '#8b5cf6'
+                    ]
+                }]
+            };
+            
+            if (fullUpdate || !charts.resolver) {
+                charts.resolver = new Chart(ctx, {
+                    type: 'doughnut',
+                    data: chartData,
+                    options: {
+                        responsive: true,
+                        animation: {
+                            duration: fullUpdate ? 1000 : 0
+                        },
+                        plugins: {
+                            legend: {
+                                position: 'bottom'
+                            }
+                        }
+                    }
+                });
+            } else {
+                container.classList.add('updating');
+                charts.resolver.data = chartData;
+                charts.resolver.update('none');
+                setTimeout(() => container.classList.remove('updating'), 300);
+            }
+        }
+        
+        function updatePerformanceChart(fullUpdate) {
+            const container = document.getElementById('performanceChartContainer');
+            const ctx = document.getElementById('performanceChart').getContext('2d');
+            const perfMetrics = currentData.performance_metrics;
+            
+            const chartData = {
+                labels: ['P50', 'P95', 'P99'],
+                datasets: [{
+                    label: 'Response Time (ms)',
+                    data: [
+                        perfMetrics.p50_response_time * 1000,
+                        perfMetrics.p95_response_time * 1000,
+                        perfMetrics.p99_response_time * 1000
+                    ],
+                    backgroundColor: [
+                        '#10b981',
+                        '#f59e0b',
+                        '#ef4444'
+                    ]
+                }]
+            };
+            
+            if (fullUpdate || !charts.performance) {
+                charts.performance = new Chart(ctx, {
+                    type: 'bar',
+                    data: chartData,
+                    options: {
+                        responsive: true,
+                        animation: {
+                            duration: fullUpdate ? 1000 : 0
+                        },
+                        plugins: {
+                            legend: {
+                                display: false
+                            }
+                        },
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                title: {
+                                    display: true,
+                                    text: 'Response Time (ms)'
+                                }
+                            }
+                        }
+                    }
+                });
+            } else {
+                container.classList.add('updating');
+                charts.performance.data = chartData;
+                charts.performance.update('none');
+                setTimeout(() => container.classList.remove('updating'), 300);
+            }
+        }
+        
+        function updateQueryTypeChart(fullUpdate) {
+            const container = document.getElementById('queryTypeChartContainer');
+            const ctx = document.getElementById('queryTypeChart').getContext('2d');
+            const queryTypeData = currentData.query_types;
+            
+            const chartData = {
+                labels: Object.keys(queryTypeData),
+                datasets: [{
+                    data: Object.values(queryTypeData),
+                    backgroundColor: [
+                        '#3b82f6',
+                        '#10b981',
+                        '#f59e0b',
+                        '#ef4444',
+                        '#8b5cf6',
+                        '#06b6d4'
+                    ]
+                }]
+            };
+            
+            if (fullUpdate || !charts.queryType) {
+                charts.queryType = new Chart(ctx, {
+                    type: 'pie',
+                    data: chartData,
+                    options: {
+                        responsive: true,
+                        animation: {
+                            duration: fullUpdate ? 1000 : 0
+                        },
+                        plugins: {
+                            legend: {
+                                position: 'bottom'
+                            }
+                        }
+                    }
+                });
+            } else {
+                container.classList.add('updating');
+                charts.queryType.data = chartData;
+                charts.queryType.update('none');
+                setTimeout(() => container.classList.remove('updating'), 300);
+            }
+        }
+        
+        function updateTables(fullUpdate = true) {
+            updateTopDomainsTable(fullUpdate);
+            updateFailingDomainsTable(fullUpdate);
+            updateTopClientsTable(fullUpdate);
+            updateRecentEventsTable(fullUpdate);
+        }
+        
+        function updateTopDomainsTable(fullUpdate) {
+            const container = document.getElementById('topDomainsContainer');
+            const table = document.getElementById('topDomainsTable');
+            
+            if (!fullUpdate) container.classList.add('updating');
+            
+            table.innerHTML = `
                 <thead>
                     <tr>
                         <th>Domain</th>
@@ -852,9 +1106,18 @@ DASHBOARD_HTML = """
                 </tbody>
             `;
             
-            // Failing domains table
-            const failingDomainsTable = document.getElementById('failingDomainsTable');
-            failingDomainsTable.innerHTML = `
+            if (!fullUpdate) {
+                setTimeout(() => container.classList.remove('updating'), 300);
+            }
+        }
+        
+        function updateFailingDomainsTable(fullUpdate) {
+            const container = document.getElementById('failingDomainsContainer');
+            const table = document.getElementById('failingDomainsTable');
+            
+            if (!fullUpdate) container.classList.add('updating');
+            
+            table.innerHTML = `
                 <thead>
                     <tr>
                         <th>Domain</th>
@@ -878,9 +1141,18 @@ DASHBOARD_HTML = """
                 </tbody>
             `;
             
-            // Top clients table
-            const topClientsTable = document.getElementById('topClientsTable');
-            topClientsTable.innerHTML = `
+            if (!fullUpdate) {
+                setTimeout(() => container.classList.remove('updating'), 300);
+            }
+        }
+        
+        function updateTopClientsTable(fullUpdate) {
+            const container = document.getElementById('topClientsContainer');
+            const table = document.getElementById('topClientsTable');
+            
+            if (!fullUpdate) container.classList.add('updating');
+            
+            table.innerHTML = `
                 <thead>
                     <tr>
                         <th>Client IP</th>
@@ -899,9 +1171,24 @@ DASHBOARD_HTML = """
                 </tbody>
             `;
             
-            // Recent events table
-            const recentEventsTable = document.getElementById('recentEventsTable');
-            recentEventsTable.innerHTML = `
+            if (!fullUpdate) {
+                setTimeout(() => container.classList.remove('updating'), 300);
+            }
+        }
+        
+        function updateRecentEventsTable(fullUpdate) {
+            const container = document.getElementById('recentEventsContainer');
+            const table = document.getElementById('recentEventsTable');
+            
+            if (!fullUpdate) container.classList.add('updating');
+            
+            // Check for new events
+            const previousEvents = previousData ? previousData.recent_events : [];
+            const newEventTimestamps = currentData.recent_events
+                .filter(e => !previousEvents.some(pe => pe.timestamp === e.timestamp))
+                .map(e => e.timestamp);
+            
+            table.innerHTML = `
                 <thead>
                     <tr>
                         <th>Time</th>
@@ -913,8 +1200,9 @@ DASHBOARD_HTML = """
                     ${currentData.recent_events.slice(0, 20).map(event => {
                         const eventClass = event.type.includes('fail') ? 'danger' : 
                                          event.type.includes('bypass') ? 'warning' : 'info';
+                        const isNew = newEventTimestamps.includes(event.timestamp);
                         return `
-                            <tr>
+                            <tr class="${isNew && !fullUpdate ? 'new-row' : ''}">
                                 <td>${event.timestamp}</td>
                                 <td><span class="status-indicator status-${eventClass === 'danger' ? 'error' : eventClass === 'warning' ? 'warning' : 'healthy'}"></span>${event.type}</td>
                                 <td>${event.details || '-'}</td>
@@ -923,6 +1211,10 @@ DASHBOARD_HTML = """
                     }).join('')}
                 </tbody>
             `;
+            
+            if (!fullUpdate) {
+                setTimeout(() => container.classList.remove('updating'), 300);
+            }
         }
         
         async function exportCSV() {
@@ -943,6 +1235,13 @@ DASHBOARD_HTML = """
                 alert('Error exporting CSV data');
             }
         }
+        
+        // Clean up interval on page unload
+        window.addEventListener('beforeunload', () => {
+            if (autoRefreshInterval) {
+                clearInterval(autoRefreshInterval);
+            }
+        });
     </script>
 </body>
 </html>
