@@ -230,7 +230,7 @@ def load_configuration(config_path: Path) -> Config:
         fallback_servers = [s.strip() for s in proxy_config.get('fallback_dns_servers', '8.8.8.8,8.8.4.4').split(',') if s.strip()]
         
         return Config(
-            primary_dns=proxy_config.get('primary_dns', "127.0.0.1:5335"),
+            primary_dns=proxy_config.get('primary_dns', "127.0.0.1:5355"),
             fallback_dns_servers=fallback_servers,
             listen_address=proxy_config.get('listen_address', '127.0.0.1'),
             dns_port=proxy_config.getint('dns_port', 5355),
