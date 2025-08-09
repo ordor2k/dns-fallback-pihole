@@ -9,6 +9,7 @@ User=root
 # User=dnsfallback
 # Group=dnsfallback
 WorkingDirectory=/opt/dns-fallback
+ExecStartPre=/bin/rm -f /var/run/dns-fallback-dashboard.pid
 ExecStart=/usr/bin/python3 /opt/dns-fallback/dns_fallback_dashboard.py
 Restart=on-failure
 RestartSec=5s
