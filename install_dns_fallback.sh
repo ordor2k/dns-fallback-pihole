@@ -283,6 +283,8 @@ install_system_deps() {
 # Create and setup virtual environment
 setup_virtual_environment() {
     print_info "Setting up Python virtual environment..."
+    python3 -m venv /opt/dns-fallback/venv
+    /opt/dns-fallback/venv/bin/pip install flask dnslib
     
     # Remove existing venv if it exists
     [ -d "$INSTALL_DIR/venv" ] && rm -rf "$INSTALL_DIR/venv"
