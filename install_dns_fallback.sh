@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Enhanced DNS Fallback Installation Script
-# Version: 2.1
+# Version: 2.1 - FIXED
 # Compatible with Pi-hole and Unbound - handles externally-managed-environment
 
 set -e
@@ -112,7 +112,7 @@ backup_existing_config() {
     fi
 }
 
-# Detect current Unbound configuration
+# FIXED: Detect current Unbound configuration
 detect_unbound_config() {
     local unbound_conf="/etc/unbound/unbound.conf.d/pi-hole.conf"
     local detected_port="5335"
@@ -124,14 +124,16 @@ detect_unbound_config() {
             detected_port=$(echo "$port_line" | grep -oE '[0-9]+')
         fi
         
-        print_info "Detected Unbound configuration:"
-        print_info "  Config file: $unbound_conf"
-        print_info "  Detected port: $detected_port"
+        # FIXED: Redirect informational output to stderr so it doesn't contaminate the return value
+        print_info "Detected Unbound configuration:" >&2
+        print_info "  Config file: $unbound_conf" >&2
+        print_info "  Detected port: $detected_port" >&2
     else
-        print_warning "Unbound Pi-hole configuration not found"
-        print_info "Expected location: $unbound_conf"
+        print_warning "Unbound Pi-hole configuration not found" >&2
+        print_info "Expected location: $unbound_conf" >&2
     fi
     
+    # Only the port number goes to stdout (captured by the calling function)
     echo "$detected_port"
 }
 
