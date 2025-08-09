@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Enhanced DNS Fallback Installation Script
-# Version: 2.2 - IMPROVED & FIXED
+# Version: 2.3 - IMPROVED & FIXED
 # Compatible with Pi-hole and Unbound - handles externally-managed-environment
 
 set -e
@@ -86,6 +86,15 @@ check_prerequisites() {
         missing_deps+=("systemd")
     fi
     
+    # Check for required tools
+    if ! command -v netstat &> /dev/null && ! command -v ss &> /dev/null; then
+        missing_deps+=("net-tools or iproute2")
+    fi
+    
+    if ! command -v lsof &> /dev/null; then
+        missing_deps+=("lsof")
+    fi
+    
     if [ ${#missing_deps[@]} -ne 0 ]; then
         print_error "Missing required dependencies:"
         for dep in "${missing_deps[@]}"; do
@@ -95,6 +104,7 @@ check_prerequisites() {
         print_info "Please install the missing dependencies and run this script again."
         print_info "For Pi-hole: https://pi-hole.net/"
         print_info "For Unbound: sudo apt install unbound"
+        print_info "For tools: sudo apt install net-tools lsof"
         exit 1
     fi
     
@@ -117,6 +127,15 @@ check_prerequisites() {
         print_info "The installation will continue, but you may need to adjust service dependencies"
     fi
     
+    # Check systemd-resolved configuration
+    if systemctl is-active --quiet systemd-resolved; then
+        local llmnr_status=$(systemd-resolve --status 2>/dev/null | grep -i "LLMNR.*yes" || echo "")
+        if [ ! -z "$llmnr_status" ]; then
+            print_warning "systemd-resolved LLMNR is enabled and may conflict with port 5355"
+            print_info "This will be checked and can be automatically resolved during installation"
+        fi
+    fi
+    
     print_success "All prerequisites found"
 }
 
@@ -125,37 +144,92 @@ check_port_conflicts() {
     print_info "Checking for port conflicts..."
     
     local conflicts=()
+    local dns_port="5355"
+    local dashboard_port="8053"
     
-    # Check port 5355 (DNS proxy)
-    if netstat -tuln 2>/dev/null | grep -q ":5355 "; then
-        local process=$(lsof -ti:5355 2>/dev/null | head -1)
+    # Check DNS proxy port (5355)
+    if netstat -tuln 2>/dev/null | grep -q ":${dns_port} " || ss -tuln 2>/dev/null | grep -q ":${dns_port} "; then
+        local process=$(lsof -ti:${dns_port} 2>/dev/null | head -1)
         if [ ! -z "$process" ]; then
             local process_name=$(ps -p "$process" -o comm= 2>/dev/null || echo "unknown")
-            conflicts+=("Port 5355 is in use by process: $process_name (PID: $process)")
+            conflicts+=("Port ${dns_port} is in use by: $process_name (PID: $process)")
+            
+            # Check if it's systemd-resolved
+            if [[ "$process_name" == *"systemd-resolve"* ]]; then
+                print_warning "systemd-resolved is using port ${dns_port} (LLMNR)" >&2
+                print_info "This can be resolved by disabling LLMNR in systemd-resolved" >&2
+            fi
         fi
     fi
     
-    # Check port 8053 (Dashboard)
-    if netstat -tuln 2>/dev/null | grep -q ":8053 "; then
-        local process=$(lsof -ti:8053 2>/dev/null | head -1)
+    # Check dashboard port (8053)
+    if netstat -tuln 2>/dev/null | grep -q ":${dashboard_port} " || ss -tuln 2>/dev/null | grep -q ":${dashboard_port} "; then
+        local process=$(lsof -ti:${dashboard_port} 2>/dev/null | head -1)
         if [ ! -z "$process" ]; then
             local process_name=$(ps -p "$process" -o comm= 2>/dev/null || echo "unknown")
-            conflicts+=("Port 8053 is in use by process: $process_name (PID: $process)")
+            conflicts+=("Port ${dashboard_port} is in use by: $process_name (PID: $process)")
         fi
     fi
     
     if [ ${#conflicts[@]} -ne 0 ]; then
         print_error "Port conflicts detected:"
         for conflict in "${conflicts[@]}"; do
-            echo "  - $conflict"
+            echo "  - $conflict" >&2
         done
-        echo ""
-        print_info "Please stop the conflicting services or choose different ports"
+        echo "" >&2
+        
+        # Offer automatic fix for systemd-resolved
+        if (netstat -tuln 2>/dev/null | grep -q ":${dns_port} " || ss -tuln 2>/dev/null | grep -q ":${dns_port} ") && pgrep systemd-resolved >/dev/null; then
+            print_info "Would you like to automatically disable LLMNR in systemd-resolved? (y/N)" >&2
+            read -r response
+            if [[ "$response" =~ ^[Yy]$ ]]; then
+                fix_systemd_resolved_conflict
+                return 0
+            fi
+        fi
+        
+        print_info "Please resolve the port conflicts before continuing" >&2
+        print_info "For systemd-resolved conflicts, see: https://wiki.archlinux.org/title/Systemd-resolved#LLMNR" >&2
         return 1
     fi
     
     print_success "No port conflicts detected"
     return 0
+}
+
+# Fix systemd-resolved LLMNR conflict
+fix_systemd_resolved_conflict() {
+    print_info "Disabling LLMNR in systemd-resolved..." >&2
+    
+    # Create drop-in directory if it doesn't exist
+    mkdir -p /etc/systemd/resolved.conf.d/
+    
+    # Create configuration to disable LLMNR
+    cat > /etc/systemd/resolved.conf.d/dns-fallback.conf << 'EOF'
+[Resolve]
+# Disable LLMNR to free up port 5355 for DNS fallback proxy
+LLMNR=no
+EOF
+    
+    # Restart systemd-resolved
+    if systemctl restart systemd-resolved; then
+        print_success "systemd-resolved configured to not use port 5355" >&2
+        
+        # Wait a moment for the port to be freed
+        sleep 2
+        
+        # Verify port is now free
+        if ! netstat -tuln 2>/dev/null | grep -q ":5355 " && ! ss -tuln 2>/dev/null | grep -q ":5355 "; then
+            print_success "Port 5355 is now available" >&2
+            return 0
+        else
+            print_warning "Port 5355 still appears to be in use" >&2
+            return 1
+        fi
+    else
+        print_error "Failed to restart systemd-resolved" >&2
+        return 1
+    fi
 }
 
 # Backup existing configuration
@@ -173,7 +247,7 @@ backup_existing_config() {
     fi
 }
 
-# IMPROVED: Detect current Unbound configuration with better error handling
+# FIXED: Detect current Unbound configuration with better error handling
 detect_unbound_config() {
     local unbound_conf="/etc/unbound/unbound.conf.d/pi-hole.conf"
     local detected_port="5335"
@@ -202,7 +276,7 @@ detect_unbound_config() {
             "port\s+([0-9]+)"
         )
         
-        for pattern in "${pattern[@]}"; do
+        for pattern in "${port_patterns[@]}"; do
             local port_line=$(grep -E "$pattern" "$found_config" | head -1)
             if [ ! -z "$port_line" ]; then
                 detected_port=$(echo "$port_line" | grep -oE '[0-9]+')
@@ -210,7 +284,7 @@ detect_unbound_config() {
             fi
         done
         
-        # Redirect informational output to stderr so it doesn't contaminate the return value
+        # FIXED: Redirect informational output to stderr so it doesn't contaminate the return value
         print_info "Detected Unbound configuration:" >&2
         print_info "  Config file: $found_config" >&2
         print_info "  Detected port: $detected_port" >&2
@@ -283,8 +357,6 @@ install_system_deps() {
 # Create and setup virtual environment
 setup_virtual_environment() {
     print_info "Setting up Python virtual environment..."
-    python3 -m venv /opt/dns-fallback/venv
-    /opt/dns-fallback/venv/bin/pip install flask dnslib
     
     # Remove existing venv if it exists
     [ -d "$INSTALL_DIR/venv" ] && rm -rf "$INSTALL_DIR/venv"
@@ -428,13 +500,13 @@ print('Config file syntax is valid')
     print_success "Configuration file created and validated at $INSTALL_DIR/config.ini"
 }
 
-# Create systemd services with virtual environment
+# Create systemd services with virtual environment and fixes
 create_services() {
     print_info "Creating systemd services..."
     
     SERVICES_CREATED=true
     
-    # DNS Fallback Proxy service - using virtual environment
+    # DNS Fallback Proxy service - using virtual environment with all fixes
     cat > "$SERVICE_DIR/$PROXY_SERVICE" << EOF
 [Unit]
 Description=DNS Fallback Pi-hole Proxy Service
@@ -444,26 +516,26 @@ Wants=pihole-FTL.service unbound.service
 [Service]
 Type=simple
 WorkingDirectory=$INSTALL_DIR
+ExecStartPre=/bin/rm -f /var/run/dns-fallback.pid
 ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/dns_fallback_proxy.py
 Restart=on-failure
 RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
 StandardOutput=append:$LOG_DIR/dns-fallback.log
 StandardError=append:$LOG_DIR/dns-fallback.log
 # Security hardening
 User=root
-# Future: Use dedicated user for better security
-# User=dnsfallback
-# Group=dnsfallback
 ProtectSystem=strict
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=$LOG_DIR $INSTALL_DIR
+ReadWritePaths=$LOG_DIR $INSTALL_DIR /var/run
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-    # Dashboard service - using virtual environment
+    # Dashboard service - using virtual environment with fixes
     cat > "$SERVICE_DIR/$DASHBOARD_SERVICE" << EOF
 [Unit]
 Description=DNS Fallback Pi-hole Dashboard Service
@@ -474,6 +546,7 @@ Wants=dns-fallback.service
 Type=simple
 User=root
 WorkingDirectory=$INSTALL_DIR
+ExecStartPre=/bin/rm -f /var/run/dns-fallback-dashboard.pid
 ExecStart=$INSTALL_DIR/venv/bin/python3 $INSTALL_DIR/dns_fallback_dashboard.py
 Restart=on-failure
 RestartSec=5
@@ -483,7 +556,7 @@ StandardError=file:$LOG_DIR/dns-fallback_dashboard.log
 ProtectSystem=strict
 PrivateTmp=true
 NoNewPrivileges=true
-ReadWritePaths=$LOG_DIR $INSTALL_DIR
+ReadWritePaths=$LOG_DIR $INSTALL_DIR /var/run
 
 [Install]
 WantedBy=multi-user.target
@@ -773,12 +846,13 @@ show_final_instructions() {
     echo "• ✅ Fixed configuration parsing bug"
     echo "• ✅ Proper virtual environment usage"
     echo "• ✅ Enhanced error handling and validation"
-    echo "• ✅ Port conflict detection"
+    echo "• ✅ Port conflict detection and resolution"
+    echo "• ✅ PID file management"
     echo "• ✅ Service dependency management"
     echo "• ✅ Comprehensive testing and verification"
     echo "• ✅ Security hardening"
     echo ""
-    print_success "Installation complete! The original Proxmox DNS issue should now be resolved. 🎉"
+    print_success "Installation complete! The original DNS SERVFAIL issues should now be resolved. 🎉"
 }
 
 # IMPROVED: Cleanup function with proper error handling
