@@ -1,22 +1,24 @@
 [Unit]
 Description=DNS Fallback Pi-hole Proxy Service
 After=network.target pihole-FTL.service unbound.service
+Wants=pihole-FTL.service unbound.service
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/dns-fallback
-ExecStart=/usr/bin/python3 /opt/dns-fallback/dns_fallback_proxy.py
+ExecStart=/opt/dns-fallback/venv/bin/python3 /opt/dns-fallback/dns_fallback_proxy.py
+ExecStartPre=/bin/rm -f /var/run/dns-fallback.pid
 Restart=on-failure
-RestartSec=5s
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
 StandardOutput=append:/var/log/dns-fallback.log
 StandardError=append:/var/log/dns-fallback.log
-# Use a non-root user for security if possible:
-# User=dnsfallback
-# Group=dnsfallback
-# Additional hardening options:
-# ProtectSystem=full
-# PrivateTmp=true
-# NoNewPrivileges=true
+User=root
+ProtectSystem=strict
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/log /opt/dns-fallback /var/run
 
 [Install]
 WantedBy=multi-user.target
